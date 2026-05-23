@@ -109,6 +109,7 @@ fn url_decode(s: &str) -> String {
 }
 
 #[napi]
+#[derive(Clone)]
 pub struct Router {
     routes: Vec<Route>,
 }

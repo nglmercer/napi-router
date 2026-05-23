@@ -1,5 +1,6 @@
-import { HttpServer, Router, RequestCall, ResponseData, WsEvent } from '../index.js';
+import { HttpServer, Router, Context, WsEvent } from '../index.js';
 
+// Router setup
 const router = new Router();
 
 router.get('/', 'home');
@@ -11,161 +12,119 @@ router.delete('/users/:id', 'deleteUser');
 router.get('/files/*path', 'serveFile');
 router.any('/health', 'healthCheck');
 
+// In-memory data store
 const users: Record<string, { name: string; email: string }> = {
   '1': { name: 'Alice', email: 'alice@example.com' },
   '2': { name: 'Bob', email: 'bob@example.com' },
 };
 
-function handleRequest(reqCall: RequestCall): void {
-  const { request, requestId } = reqCall;
-  const match = router.matchRoute(request.method, request.path);
+// Server setup
+const server = new HttpServer();
 
-  if (!match) {
-    server.sendResponse(requestId, {
-      status: 404,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ error: 'Not Found', path: request.path }),
-    });
+// Attach the router so ctx.next() performs route matching
+server.useRouter(router);
+
+// Register middleware / request handler via Context
+server.use((ctx: Context): void => {
+  const { method, path, body } = ctx.getRequest();
+
+  // Example: request logging
+  console.log(`[${method}] ${path}`);
+
+  // Let Rust run route matching
+  ctx.next();
+
+  // Check which handler matched and respond
+  const handlerId = ctx.matchedHandler();
+
+  if (!handlerId) {
+    // No route matched
+    ctx.sendResponse(404, JSON.stringify({ error: 'Not Found', path }));
     return;
   }
 
-  let response: ResponseData;
+  const params = ctx.params();
 
-  switch (match.handlerId) {
+  switch (handlerId) {
     case 'home':
-      response = {
-        status: 200,
-        headers: { 'content-type': 'text/html' },
-        body: '<h1>NAPI Router</h1><p>HTTP + WebSocket server powered by Rust</p>',
-      };
+      ctx.sendResponse(200, '<h1>NAPI Router</h1><p>HTTP + WebSocket server powered by Rust</p>');
       break;
 
     case 'healthCheck':
-      response = {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          status: 'ok',
-          wsConnections: server.wsConnectionCount(),
-          pendingRequests: server.pendingCount(),
-          routes: router.routeCount(),
-        }),
-      };
+      ctx.json(200, JSON.stringify({
+        status: 'ok',
+        wsConnections: server.wsConnectionCount(),
+        pendingRequests: server.pendingCount(),
+        routes: router.routeCount(),
+      }));
       break;
 
     case 'listUsers':
-      response = {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(Object.entries(users).map(([id, u]) => ({ id, ...u }))),
-      };
+      ctx.json(200, JSON.stringify(
+        Object.entries(users).map(([id, u]) => ({ id, ...u }))
+      ));
       break;
 
     case 'getUser': {
-      const user = users[match.params.id];
+      const user = users[params.id];
       if (user) {
-        response = {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ id: match.params.id, ...user }),
-        };
+        ctx.json(200, JSON.stringify({ id: params.id, ...user }));
       } else {
-        response = {
-          status: 404,
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ error: 'User not found' }),
-        };
+        ctx.sendResponse(404, JSON.stringify({ error: 'User not found' }));
       }
       break;
     }
 
     case 'createUser': {
       try {
-        const body = JSON.parse(request.body || '{}');
+        const data = JSON.parse(body || '{}');
         const id = String(Object.keys(users).length + 1);
-        users[id] = { name: body.name || 'Unknown', email: body.email || '' };
-        response = {
-          status: 201,
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ id, ...users[id] }),
-        };
+        users[id] = { name: data.name || 'Unknown', email: data.email || '' };
+        ctx.json(201, JSON.stringify({ id, ...users[id] }));
       } catch {
-        response = {
-          status: 400,
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ error: 'Invalid JSON' }),
-        };
+        ctx.sendResponse(400, JSON.stringify({ error: 'Invalid JSON' }));
       }
       break;
     }
 
     case 'updateUser': {
-      const user = users[match.params.id];
+      const user = users[params.id];
       if (!user) {
-        response = {
-          status: 404,
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ error: 'User not found' }),
-        };
+        ctx.sendResponse(404, JSON.stringify({ error: 'User not found' }));
         break;
       }
       try {
-        const body = JSON.parse(request.body || '{}');
-        if (body.name) user.name = body.name;
-        if (body.email) user.email = body.email;
-        response = {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ id: match.params.id, ...user }),
-        };
+        const data = JSON.parse(body || '{}');
+        if (data.name) user.name = data.name;
+        if (data.email) user.email = data.email;
+        ctx.json(200, JSON.stringify({ id: params.id, ...user }));
       } catch {
-        response = {
-          status: 400,
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ error: 'Invalid JSON' }),
-        };
+        ctx.sendResponse(400, JSON.stringify({ error: 'Invalid JSON' }));
       }
       break;
     }
 
     case 'deleteUser':
-      if (users[match.params.id]) {
-        delete users[match.params.id];
-        response = {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ deleted: true }),
-        };
+      if (users[params.id]) {
+        delete users[params.id];
+        ctx.json(200, JSON.stringify({ deleted: true }));
       } else {
-        response = {
-          status: 404,
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ error: 'User not found' }),
-        };
+        ctx.sendResponse(404, JSON.stringify({ error: 'User not found' }));
       }
       break;
 
     case 'serveFile':
-      response = {
-        status: 200,
-        headers: { 'content-type': 'text/plain' },
-        body: `Serving file: ${match.params.path}`,
-      };
+      ctx.sendResponse(200, `Serving file: ${params.path}`);
       break;
 
     default:
-      response = {
-        status: 500,
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ error: 'Unknown handler' }),
-      };
+      ctx.sendResponse(500, JSON.stringify({ error: 'Unknown handler' }));
   }
+});
 
-  server.sendResponse(requestId, response);
-}
 
-const server = new HttpServer();
 
+// WebSocket event handler
 server.onWsEvent((event: WsEvent) => {
   switch (event.eventType) {
     case 'open':
@@ -199,8 +158,9 @@ server.onWsEvent((event: WsEvent) => {
   }
 });
 
+// Start server
 const PORT = 3000;
-server.listen(PORT, handleRequest);
+await server.listen(PORT);
 
 console.log(`HTTP + WS server listening on http://localhost:${PORT}`);
 console.log(`WebSocket upgrade available at ws://localhost:${PORT}`);
