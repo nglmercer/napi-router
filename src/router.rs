@@ -33,35 +33,49 @@ fn parse_segments(path: &str) -> Vec<Segment> {
         .collect()
 }
 
-fn match_segments(route_segs: &[Segment], path_segs: &[&str]) -> Option<HashMap<String, String>> {
+fn match_segments<'a>(
+    route_segs: &[Segment],
+    path_segs: &[&'a str],
+) -> Option<HashMap<String, String>> {
+    // trailing slash adds empty segment — strip it
+    let clean: Vec<&'a str> = if path_segs.last() == Some(&"") {
+        path_segs[..path_segs.len() - 1].to_vec()
+    } else {
+        path_segs.to_vec()
+    };
+
+    let is_wildcard = matches!(route_segs.last(), Some(Segment::Wildcard(_)));
+    if route_segs.len() != clean.len() && !is_wildcard {
+        return None;
+    }
+
     let mut params = HashMap::new();
     let mut pi = 0;
 
     for seg in route_segs {
         match seg {
             Segment::Static(s) => {
-                if pi >= path_segs.len() || path_segs[pi] != s.as_str() {
+                if pi >= clean.len() || clean[pi] != s.as_str() {
                     return None;
                 }
                 pi += 1;
             }
             Segment::Param(name) => {
-                if pi >= path_segs.len() {
+                if pi >= clean.len() {
                     return None;
                 }
-                params.insert(name.clone(), url_decode(path_segs[pi]));
+                params.insert(name.clone(), url_decode(clean[pi]));
                 pi += 1;
             }
             Segment::Wildcard(name) => {
-                let rest = path_segs[pi..].join("/");
+                let rest = clean[pi..].join("/");
                 params.insert(name.clone(), url_decode(&rest));
-                pi = path_segs.len();
-                break;
+                return Some(params);
             }
         }
     }
 
-    if pi == path_segs.len() {
+    if pi == clean.len() {
         Some(params)
     } else {
         None

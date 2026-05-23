@@ -24,7 +24,7 @@ use crate::websocket::{
 type PendingResponses = Arc<Mutex<HashMap<String, oneshot::Sender<ResponseData>>>>;
 type HttpTsfn = Arc<ThreadsafeFunction<RequestCall, (), (RequestCall,), napi::Status, false>>;
 
-fn create_http_tsfn(handler: Function<'_, RequestCall, ()>) -> Result<HttpTsfn> {
+fn build_http_tsfn(handler: Function<'_, RequestCall, ()>) -> Result<HttpTsfn> {
     let tsfn = handler
         .build_threadsafe_function::<RequestCall>()
         .build_callback(|ctx: ThreadsafeCallContext<RequestCall>| {
@@ -33,7 +33,7 @@ fn create_http_tsfn(handler: Function<'_, RequestCall, ()>) -> Result<HttpTsfn> 
     Ok(Arc::new(tsfn))
 }
 
-fn create_ws_tsfn(handler: Function<'_, WsEvent, ()>) -> Result<WsEventTsfn> {
+fn build_ws_tsfn(handler: Function<'_, WsEvent, ()>) -> Result<WsEventTsfn> {
     let tsfn = handler
         .build_threadsafe_function::<WsEvent>()
         .build_callback(|ctx: ThreadsafeCallContext<WsEvent>| {
@@ -49,6 +49,7 @@ pub struct HttpServer {
     next_id: Arc<Mutex<u64>>,
     ws_senders: WsSenders,
     ws_event_tsfn: Arc<Mutex<Option<WsEventTsfn>>>,
+    http_tsfn: Arc<Mutex<Option<HttpTsfn>>>,
 }
 
 #[napi]
@@ -61,76 +62,94 @@ impl HttpServer {
             next_id: Arc::new(Mutex::new(0)),
             ws_senders: Arc::new(Mutex::new(HashMap::new())),
             ws_event_tsfn: Arc::new(Mutex::new(None)),
+            http_tsfn: Arc::new(Mutex::new(None)),
         }
     }
 
     #[napi]
-    pub fn listen(&self, port: u16, handler: Function<'_, RequestCall, ()>) -> Result<()> {
-        let tsfn: HttpTsfn = create_http_tsfn(handler)?;
+    pub fn on_request(&self, handler: Function<'_, RequestCall, ()>) -> Result<()> {
+        let tsfn = build_http_tsfn(handler)?;
+        let mut lock = self.http_tsfn.lock().unwrap();
+        *lock = Some(tsfn);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn on_ws_event(&self, handler: Function<'_, WsEvent, ()>) -> Result<()> {
+        let tsfn = build_ws_tsfn(handler)?;
+        let mut lock = self.ws_event_tsfn.lock().unwrap();
+        *lock = Some(tsfn);
+        Ok(())
+    }
+
+    #[napi]
+    pub async fn listen(&self, port: u16) -> Result<()> {
+        let tsfn = {
+            let lock = self.http_tsfn.lock().unwrap();
+            lock.clone()
+                .ok_or_else(|| Error::from_reason("No request handler set. Call on_request() first."))?
+        };
 
         let addr = format!("0.0.0.0:{}", port);
+        let listener = TcpListener::bind(&addr)
+            .await
+            .map_err(|e| Error::from_reason(format!("Failed to bind to {}: {}", addr, e)))?;
+
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+        {
+            let mut tx = self.shutdown_tx.lock().unwrap();
+            *tx = Some(shutdown_tx);
+        }
+
         let pending = self.pending.clone();
         let next_id = self.next_id.clone();
         let ws_senders = self.ws_senders.clone();
         let ws_event_tsfn = self.ws_event_tsfn.clone();
-        let shutdown_tx = self.shutdown_tx.clone();
 
-        tokio::spawn(async move {
-            let listener = match TcpListener::bind(&addr).await {
-                Ok(l) => l,
-                Err(_) => return,
-            };
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_rx => {
+                    break;
+                }
+                result = listener.accept() => {
+                    match result {
+                        Ok((stream, remote_addr)) => {
+                            let tsfn = tsfn.clone();
+                            let pending = pending.clone();
+                            let next_id = next_id.clone();
+                            let ws_senders = ws_senders.clone();
+                            let ws_event_tsfn = ws_event_tsfn.clone();
+                            let remote = remote_addr.to_string();
 
-            let (tx, mut rx) = oneshot::channel::<()>();
-            {
-                let mut shutdown = shutdown_tx.lock().unwrap();
-                *shutdown = Some(tx);
-            }
-
-            loop {
-                tokio::select! {
-                    _ = &mut rx => {
-                        break;
-                    }
-                    result = listener.accept() => {
-                        match result {
-                            Ok((stream, remote_addr)) => {
-                                let tsfn = tsfn.clone();
-                                let pending = pending.clone();
-                                let next_id = next_id.clone();
-                                let ws_senders = ws_senders.clone();
-                                let ws_event_tsfn = ws_event_tsfn.clone();
-                                let remote = remote_addr.to_string();
-
-                                tokio::spawn(async move {
-                                    let io = TokioIo::new(stream);
-                                    let service = hyper::service::service_fn(move |req: Request<Incoming>| {
-                                        let tsfn = tsfn.clone();
-                                        let pending = pending.clone();
-                                        let next_id = next_id.clone();
-                                        let ws_senders = ws_senders.clone();
-                                        let ws_event_tsfn = ws_event_tsfn.clone();
-                                        let remote = remote.clone();
-                                        async move {
-                                            handle_request(
-                                                req, tsfn, pending, next_id, ws_senders, ws_event_tsfn, remote,
-                                            )
-                                            .await
-                                        }
-                                    });
-
-                                    let _ = hyper::server::conn::http1::Builder::new()
-                                        .serve_connection(io, service)
-                                        .with_upgrades()
-                                        .await;
+                            tokio::spawn(async move {
+                                let io = TokioIo::new(stream);
+                                let service = hyper::service::service_fn(move |req: Request<Incoming>| {
+                                    let tsfn = tsfn.clone();
+                                    let pending = pending.clone();
+                                    let next_id = next_id.clone();
+                                    let ws_senders = ws_senders.clone();
+                                    let ws_event_tsfn = ws_event_tsfn.clone();
+                                    let remote = remote.clone();
+                                    async move {
+                                        handle_request(
+                                            req, tsfn, pending, next_id, ws_senders, ws_event_tsfn, remote,
+                                        )
+                                        .await
+                                    }
                                 });
-                            }
-                            Err(_) => continue,
+
+                                if let Err(_) = hyper::server::conn::http1::Builder::new()
+                                    .serve_connection(io, service)
+                                    .with_upgrades()
+                                    .await
+                                {}
+                            });
                         }
+                        Err(_) => continue,
                     }
                 }
             }
-        });
+        }
 
         Ok(())
     }
@@ -150,15 +169,6 @@ impl HttpServer {
             tx.send(response)
                 .map_err(|_| Error::from_reason("Failed to send response"))?;
         }
-        Ok(())
-    }
-
-    #[napi]
-    pub fn on_ws_event(&self, handler: Function<'_, WsEvent, ()>) -> Result<()> {
-        let tsfn: WsEventTsfn = create_ws_tsfn(handler)?;
-
-        let mut tsfn_lock = self.ws_event_tsfn.lock().unwrap();
-        *tsfn_lock = Some(tsfn);
         Ok(())
     }
 
