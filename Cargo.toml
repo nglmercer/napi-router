@@ -1,11 +1,11 @@
 [package]
-name = "napi_template"
+name = "napi_router"
 version = "1.0.0"
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib"]
-name = "napi_template"
+name = "napi_router"
 
 [package.metadata.napi]
 targets = [
@@ -20,8 +20,15 @@ targets = [
 [dependencies]
 napi = { version = "3.8.2", features = ["napi9", "async"] }
 napi-derive = "3.5.1"
-chrono = "0.4"
 tokio = { version = "1", features = ["full"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+bytes = "1"
+sha1 = "0.10"
+base64 = "0.22"
 
 [build-dependencies]
 napi-build = "2.3.1"

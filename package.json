@@ -1,15 +1,16 @@
 {
-  "name": "napi-template-bun",
+  "name": "napi-router",
   "version": "1.0.0",
-  "description": "Template for NAPI (Node-API) native addons with Bun runtime",
+  "description": "High-performance HTTP and WebSocket router powered by Rust via NAPI",
   "keywords": [
     "napi",
     "node-addon",
     "native",
     "rust",
-    "bun",
-    "template",
-    "starter"
+    "http",
+    "websocket",
+    "router",
+    "server"
   ],
   "homepage": "https://github.com/your-username/your-repo#readme",
   "repository": {
@@ -59,7 +60,7 @@
     "bun": ">=1.0.0"
   },
   "napi": {
-    "binaryName": "template",
+    "binaryName": "napi-router",
     "targets": [
       "x86_64-pc-windows-msvc",
       "i686-pc-windows-msvc",
