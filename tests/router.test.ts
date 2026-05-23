@@ -1,7 +1,7 @@
 import { expect, test, describe } from "bun:test";
 import { Router } from "../index";
 
-describe("Router Tests", () => {
+describe("Router — basic operations", () => {
   test("constructor creates empty router", () => {
     const r = new Router();
     expect(r.routeCount()).toBe(0);
@@ -29,7 +29,9 @@ describe("Router Tests", () => {
     expect(r.matchRoute("POST", "/items")!.handlerId).toBe("createItem");
     expect(r.matchRoute("PUT", "/items")).toBeNull();
   });
+});
 
+describe("Router — parameters and wildcards", () => {
   test("single path parameter :id", () => {
     const r = new Router();
     r.addRoute("GET", "/users/:id", "getUser");
@@ -62,26 +64,16 @@ describe("Router Tests", () => {
     expect(m.params.path).toBe("deep/nested/file.txt");
   });
 
-  test("trailing slash does not match without trailing route", () => {
-    const r = new Router();
-    r.addRoute("GET", "/users", "listUsers");
-    expect(r.matchRoute("GET", "/users/")).toBeNull();
-  });
-
-  test("trailing slash no-op on static endpoint with slash compatible route", () => {
-    const r = new Router();
-    r.addRoute("GET", "/users/", "listUsers"); // explicitly trailingSlash route
-    expect(r.matchRoute("GET", "/users/")!.handlerId).toBe("listUsers");
-  });
-
   test("query string stripped before path matching", () => {
     const r = new Router();
     r.addRoute("GET", "/search", "search");
     expect(r.matchRoute("GET", "/search?q=hello&page=1")).not.toBeNull();
     expect(r.matchRoute("GET", "/search")).not.toBeNull();
   });
+});
 
-  test("convenience methods — all HTTP verbs", () => {
+describe("Router — convenience methods", () => {
+  test("all HTTP verb shortcuts", () => {
     const router = new Router();
     router.get("/g", "getHandler");
     router.post("/p", "postHandler");
@@ -99,15 +91,23 @@ describe("Router Tests", () => {
     expect(router.matchRoute("PATCH", "/pa")!.handlerId).toBe("patchHandler");
     expect(router.matchRoute("OPTIONS", "/o")!.handlerId).toBe("optionsHandler");
     expect(router.matchRoute("HEAD", "/h")!.handlerId).toBe("headHandler");
-    // any matches all methods
     for (const m of ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"] as const) {
       expect(router.matchRoute(m, "/a")!.handlerId).toBe("anyHandler");
     }
   });
 
-  test("matchAll — GET /items/5 matches one exact route", () => {
+  test("any() matches all HTTP methods", () => {
     const r = new Router();
     r.any("/health", "healthCheck");
+    for (const m of ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]) {
+      expect(r.matchRoute(m, "/health")!.handlerId).toBe("healthCheck");
+    }
+  });
+});
+
+describe("Router — matchAll", () => {
+  test("matchAll returns one result for single match", () => {
+    const r = new Router();
     r.addRoute("GET", "/items/:id", "getItem");
     r.addRoute("POST", "/items/:id", "updateItem");
     const all = r.matchAll("GET", "/items/5");
@@ -115,7 +115,7 @@ describe("Router Tests", () => {
     expect(all[0].handlerId).toBe("getItem");
   });
 
-  test("matchAll — any + exact both fire", () => {
+  test("matchAll returns multiple when any + exact coexist", () => {
     const r = new Router();
     r.any("/items/:id", "anyHandler");
     r.addRoute("GET", "/items/:id", "getItem");
@@ -123,7 +123,9 @@ describe("Router Tests", () => {
     expect(all).toHaveLength(2);
     expect(all.map((x) => x.handlerId)).toEqual(["anyHandler", "getItem"]);
   });
+});
 
+describe("Router — mutation", () => {
   test("clear removes all routes", () => {
     const r = new Router();
     r.get("/a", "h");

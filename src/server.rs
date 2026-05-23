@@ -198,7 +198,9 @@ impl HttpServer {
 
     // ── lifecycle ────────────────────────────────────────────────────────────
 
-    /// Start serving. Blocks until `close()` is called.
+    /// Start serving.  Binds the port and spawns the accept loop in the
+    /// background.  The returned Promise resolves as soon as the server
+    /// is ready (or errors on bind failure).
     ///
     /// ```ts
     /// await server.listen(3000);
@@ -209,6 +211,17 @@ impl HttpServer {
         let listener = TcpListener::bind(&addr)
             .await
             .map_err(|e| Error::from_reason(format!("bind {}: {}", addr, e)))?;
+
+        // Validate that at least one handler is registered
+        {
+            let req = self.req_tsfn.lock().await;
+            let ctx = self.ctx_tsfn.lock().await;
+            if req.is_none() && ctx.is_none() {
+                return Err(Error::from_reason(
+                    "No handler registered. Call server.onRequest(fn) or server.use(fn) first.",
+                ));
+            }
+        }
 
         let (tx, mut rx) = oneshot::channel();
         *self.shutdown_tx.lock().await = Some(tx);
@@ -221,61 +234,55 @@ impl HttpServer {
         let ctx_tsfn   = self.ctx_tsfn.clone();
         let router_opt = self.router.clone();
 
-        // Validate that at least one handler is registered
-        {
-            let req = req_tsfn.lock().await;
-            let ctx = ctx_tsfn.lock().await;
-            if req.is_none() && ctx.is_none() {
-                return Err(Error::from_reason(
-                    "No handler registered. Call server.onRequest(fn) or server.use(fn) first.",
-                ));
-            }
-        }
-
-        loop {
-            tokio::select! {
-                _ = &mut rx => break,
-                result = listener.accept() => {
-                    match result {
-                        Ok((stream, remote_addr)) => {
-                            let pending    = pending.clone();
-                            let next_id    = next_id.clone();
-                            let ws_senders = ws_senders.clone();
-                            let ws_tsfn    = ws_tsfn.clone();
-                            let req_tsfn   = req_tsfn.clone();
-                            let ctx_tsfn   = ctx_tsfn.clone();
-                            let router_opt = router_opt.clone();
-                            let remote     = remote_addr.to_string();
-                            tokio::spawn(async move {
-                                let io = TokioIo::new(stream);
-                                let svc = hyper::service::service_fn(move |req: Request<Incoming>| {
-                                    let pending    = pending.clone();
-                                    let next_id    = next_id.clone();
-                                    let ws_senders = ws_senders.clone();
-                                    let ws_tsfn    = ws_tsfn.clone();
-                                    let req_tsfn   = req_tsfn.clone();
-                                    let ctx_tsfn   = ctx_tsfn.clone();
-                                    let router_opt = router_opt.clone();
-                                    let remote     = remote.clone();
-                                    async move {
-                                        handle_http(
-                                            req, req_tsfn, ctx_tsfn, pending, next_id,
-                                            ws_senders, ws_tsfn, router_opt, remote,
-                                        )
-                                        .await
-                                    }
+        // Spawn the accept loop in background so the caller's Promise
+        // resolves immediately (server is ready).
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut rx => break,
+                    result = listener.accept() => {
+                        match result {
+                            Ok((stream, remote_addr)) => {
+                                let pending    = pending.clone();
+                                let next_id    = next_id.clone();
+                                let ws_senders = ws_senders.clone();
+                                let ws_tsfn    = ws_tsfn.clone();
+                                let req_tsfn   = req_tsfn.clone();
+                                let ctx_tsfn   = ctx_tsfn.clone();
+                                let router_opt = router_opt.clone();
+                                let remote     = remote_addr.to_string();
+                                tokio::spawn(async move {
+                                    let io = TokioIo::new(stream);
+                                    let svc = hyper::service::service_fn(move |req: Request<Incoming>| {
+                                        let pending    = pending.clone();
+                                        let next_id    = next_id.clone();
+                                        let ws_senders = ws_senders.clone();
+                                        let ws_tsfn    = ws_tsfn.clone();
+                                        let req_tsfn   = req_tsfn.clone();
+                                        let ctx_tsfn   = ctx_tsfn.clone();
+                                        let router_opt = router_opt.clone();
+                                        let remote     = remote.clone();
+                                        async move {
+                                            handle_http(
+                                                req, req_tsfn, ctx_tsfn, pending, next_id,
+                                                ws_senders, ws_tsfn, router_opt, remote,
+                                            )
+                                            .await
+                                        }
+                                    });
+                                    let _ = hyper::server::conn::http1::Builder::new()
+                                        .serve_connection(io, svc)
+                                        .with_upgrades()
+                                        .await;
                                 });
-                                let _ = hyper::server::conn::http1::Builder::new()
-                                    .serve_connection(io, svc)
-                                    .with_upgrades()
-                                    .await;
-                            });
+                            }
+                            Err(_) => continue,
                         }
-                        Err(_) => continue,
                     }
                 }
             }
-        }
+        });
+
         Ok(())
     }
 
@@ -436,11 +443,11 @@ async fn handle_http_ctx(
         inner: Arc::new(UnsafeCell::new(inner)),
     };
 
-    // ── Call middleware (Blocking) ───────────────────────────────────────────
-    // Blocking mode: the calling tokio thread is suspended until JS finishes.
-    // This is safe because napi-rs uses a condvar under the hood and the JS
-    // event loop runs on the main thread.
-    tsfn.call(ctx.clone(), ThreadsafeFunctionCallMode::Blocking);
+    // ── Call middleware (NonBlocking) ────────────────────────────────────────
+    // We use NonBlocking + a oneshot signal channel because Blocking mode
+    // would deadlock: the tokio worker thread IS the main JS thread (Bun),
+    // and blocking it prevents the JS event loop from processing the TSFN.
+    tsfn.call(ctx.clone(), ThreadsafeFunctionCallMode::NonBlocking);
 
     // ── Wait for signal or timeout ───────────────────────────────────────────
     let _ = tokio::time::timeout(Duration::from_secs(30), signal_rx).await;
