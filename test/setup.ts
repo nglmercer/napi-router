@@ -76,12 +76,12 @@ export async function withServer(
 
 /** Make a fetch request to a path on the given server. */
 export function get(server: Server, path: string, init?: RequestInit): Promise<Response> {
-  return fetch(`http://localhost:${server.port}${path}`, init);
+  return fetch(`http://${server.hostname}:${server.port}${path}`, init);
 }
 
 /** POST to a path on the given server with a text body. */
 export function post(server: Server, path: string, body: string, init?: RequestInit): Promise<Response> {
-  return fetch(`http://localhost:${server.port}${path}`, {
+  return fetch(`http://${server.hostname}:${server.port}${path}`, {
     method: 'POST',
     body,
     ...init,
@@ -95,7 +95,7 @@ export function request(
   path: string,
   init?: RequestInit,
 ): Promise<Response> {
-  return fetch(`http://localhost:${server.port}${path}`, { method, ...init });
+  return fetch(`http://${server.hostname}:${server.port}${path}`, { method, ...init });
 }
 
 // ---------------------------------------------------------------------------
@@ -105,7 +105,7 @@ export function request(
 /** Connect a WebSocket and wait for it to open. */
 export function wsConnect(server: Server, path = '/ws'): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://localhost:${server.port}${path}`);
+    const ws = new WebSocket(`ws://${server.hostname}:${server.port}${path}`);
     ws.onopen = () => resolve(ws);
     ws.onerror = () => reject(new Error(`WebSocket failed to connect to port ${server.port}${path}`));
   });

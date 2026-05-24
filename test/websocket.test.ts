@@ -408,3 +408,111 @@ describe('WebSocket + HTTP on the same server', () => {
     await sleep(40);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Manual upgrade and ws.data / pubsub tests
+// ---------------------------------------------------------------------------
+
+describe('WebSocket — manual upgrade and data tracking', () => {
+  it('supports manual upgrade and attaches contextual data', async () => {
+    let openData: any = null;
+    const port = nextPort('WEBSOCKET');
+
+    const s = await serve({
+      port,
+      hostname: '127.0.0.1',
+      fetch(req, server) {
+        const upgraded = server.upgrade(req, {
+          data: { greeting: 'hello manual' },
+        });
+        if (upgraded) return;
+        return new Response('not upgraded', { status: 400 });
+      },
+      websocket: {
+        open(ws) {
+          openData = ws.data;
+        },
+      },
+    });
+
+    const ws = await wsConnect(s);
+    await sleep(50);
+
+    expect(openData).toEqual({ greeting: 'hello manual' });
+
+    await closeWs(ws);
+    await sleep(50);
+    s.stop();
+  });
+});
+
+describe('WebSocket — Pub/Sub API', () => {
+  it('supports subscribe, unsubscribe, isSubscribed, and publish', async () => {
+    const port = nextPort('WEBSOCKET');
+    const receivedA: string[] = [];
+    const receivedB: string[] = [];
+
+    const s = await serve({
+      port,
+      hostname: '127.0.0.1',
+      fetch(req, server) {
+        if (server.upgrade(req)) return;
+        return new Response('ok');
+      },
+      websocket: {
+        open(ws) {
+          // Subscribe client to "broadcast" topic by default
+          ws.subscribe('broadcast');
+        },
+        message(ws, msg) {
+          if (msg === 'unsub') {
+            ws.unsubscribe('broadcast');
+            ws.send(`unsubscribed:${ws.isSubscribed('broadcast')}`);
+          } else if (msg === 'check') {
+            ws.send(`status:${ws.isSubscribed('broadcast')}`);
+          } else {
+            ws.publish('broadcast', msg as string);
+          }
+        },
+      },
+    });
+
+    const wsA = await wsConnect(s);
+    wsA.onmessage = (e) => receivedA.push(e.data);
+
+    const wsB = await wsConnect(s);
+    wsB.onmessage = (e) => receivedB.push(e.data);
+
+    await sleep(50);
+
+    // Test ws.publish: client A publishes a message, client B (subscribed) should receive it, but A should not (excluded)
+    wsA.send('hello from A');
+    await sleep(50);
+    expect(receivedB).toContain('hello from A');
+    expect(receivedA).not.toContain('hello from A');
+
+    // Test ws.isSubscribed
+    const p1 = nextMessage(wsA);
+    wsA.send('check');
+    expect(await p1).toBe('status:true');
+
+    // Test ws.unsubscribe
+    const p2 = nextMessage(wsA);
+    wsA.send('unsub');
+    expect(await p2).toBe('unsubscribed:false');
+
+    // Test server.publish: publish to topic from server handle
+    s.publish('broadcast', 'server broadcast');
+    await sleep(50);
+
+    // Client B is still subscribed, A is unsubscribed
+    expect(receivedB).toContain('server broadcast');
+    expect(receivedA).not.toContain('server broadcast');
+
+    await closeWs(wsA);
+    await closeWs(wsB);
+    await sleep(50);
+    s.stop();
+  });
+});
+

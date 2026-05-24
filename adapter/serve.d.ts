@@ -106,8 +106,10 @@ export interface ServeOptions {
   /**
    * Request handler — receives a standard Web API `Request` and must return a
    * `Response` (or a Promise that resolves to one).
+   * May return `undefined` if `server.upgrade()` was called to handle a
+   * WebSocket upgrade.
    */
-  fetch(request: Request, server: Server): Response | Promise<Response>;
+  fetch(request: Request, server: Server): Response | Promise<Response> | undefined;
   /**
    * WebSocket event handlers. Providing this object enables WebSocket support.
    */

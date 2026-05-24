@@ -131,7 +131,9 @@ pub async fn handle_ws_connection(
                             }
                             _ => continue,
                         };
-                        tsfn.call(event, ThreadsafeFunctionCallMode::NonBlocking);
+                        if tsfn.call(event, ThreadsafeFunctionCallMode::NonBlocking) != Status::Ok {
+                            eprintln!("ws message event call failed");
+                        }
                     }
 
                     if is_close {
@@ -150,7 +152,9 @@ pub async fn handle_ws_connection(
                             reason: None,
                             remote_addr: None,
                         };
-                        tsfn.call(event, ThreadsafeFunctionCallMode::NonBlocking);
+                        if tsfn.call(event, ThreadsafeFunctionCallMode::NonBlocking) != Status::Ok {
+                            eprintln!("ws error event call failed");
+                        }
                     }
                     break;
                 }
@@ -179,6 +183,8 @@ pub async fn handle_ws_connection(
             reason: Some("Connection closed".to_string()),
             remote_addr: None,
         };
-        tsfn.call(event, ThreadsafeFunctionCallMode::NonBlocking);
+        if tsfn.call(event, ThreadsafeFunctionCallMode::NonBlocking) != Status::Ok {
+            eprintln!("ws disconnect event call failed");
+        }
     }
 }

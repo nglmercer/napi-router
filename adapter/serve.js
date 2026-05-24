@@ -86,7 +86,7 @@ class ServerHandle {
 
     connectionMetas.set(connectionId, {
       data: options.data ?? null,
-      remoteAddress: null,
+      remoteAddress: ctx.remoteAddr ?? null,
     });
 
     return true;
@@ -241,9 +241,9 @@ function wireWebSocket(raw, wsHandlers) {
 
     switch (event.eventType) {
       case "open":
-        if (event.remoteAddress) {
+        if (event.remoteAddr) {
           const meta = connectionMetas.get(event.connectionId);
-          if (meta) meta.remoteAddress = event.remoteAddress;
+          if (meta) meta.remoteAddress = event.remoteAddr;
         }
         wsHandlers.open?.(ws);
         break;
@@ -300,36 +300,8 @@ export async function serve(options) {
     const webRequest = toWebRequest(requestData, baseUrl);
 
     // Store request context for potential upgrade()
-    const reqCtx = { requestId, upgraded: false, connectionId: null };
+    const reqCtx = { requestId, upgraded: false, connectionId: null, remoteAddr: requestData.remoteAddr };
     requestContexts.set(webRequest, reqCtx);
-
-    // Auto-detect WebSocket upgrade: if websocket is configured and
-    // the incoming request has Upgrade: websocket, handle it directly
-    // without going through the fetch handler.
-    const headers = requestData.headers ?? {};
-    const isUpgrade =
-      headers["upgrade"]?.toLowerCase() === "websocket" &&
-      headers["connection"]?.toLowerCase().includes("upgrade");
-
-    if (isUpgrade && websocket) {
-      const connectionId = uniqueId("ws");
-      reqCtx.upgraded = true;
-      reqCtx.connectionId = connectionId;
-
-      connectionMetas.set(connectionId, {
-        data: null,
-        remoteAddress: requestData.remoteAddr ?? null,
-      });
-
-      raw.sendResponse(requestId, {
-        status: 101,
-        headers: {},
-        body: "",
-        upgrade: true,
-        connectionId,
-      });
-      return;
-    }
 
     // Normal HTTP request — call the user's fetch handler
     let response;
@@ -363,6 +335,34 @@ export async function serve(options) {
         body: "",
         upgrade: true,
         connectionId: reqCtx.connectionId,
+      });
+      return;
+    }
+
+    // Auto-detect WebSocket upgrade fallback: if the request has Upgrade: websocket,
+    // and the user did NOT call upgrade() manually, but websocket option is provided,
+    // perform the upgrade automatically.
+    const headers = requestData.headers ?? {};
+    const isUpgrade =
+      headers["upgrade"]?.toLowerCase() === "websocket" &&
+      headers["connection"]?.toLowerCase().includes("upgrade");
+
+    if (isUpgrade && websocket) {
+      const connectionId = uniqueId("ws");
+      reqCtx.upgraded = true;
+      reqCtx.connectionId = connectionId;
+
+      connectionMetas.set(connectionId, {
+        data: null,
+        remoteAddress: requestData.remoteAddr ?? null,
+      });
+
+      raw.sendResponse(requestId, {
+        status: 101,
+        headers: {},
+        body: "",
+        upgrade: true,
+        connectionId,
       });
       return;
     }

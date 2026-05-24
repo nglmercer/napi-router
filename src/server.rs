@@ -422,8 +422,8 @@ async fn handle_request(
             request: request_data,
             request_id: request_id.clone(),
         };
-        if let Err(e) = tsfn.call(call, ThreadsafeFunctionCallMode::NonBlocking) {
-            eprintln!("on_request call failed: {}", e);
+        if tsfn.call(call, ThreadsafeFunctionCallMode::NonBlocking) != Status::Ok {
+            eprintln!("on_request call failed");
         }
     } else {
         state.pending.lock().unwrap().remove(&request_id);
@@ -513,7 +513,9 @@ async fn handle_ws_upgrade(
                     remote_addr: Some(_remote_addr.clone()),
                 };
                 if let Some(ref tsfn) = event_tsfn {
-                    tsfn.call(event, ThreadsafeFunctionCallMode::NonBlocking);
+                    if tsfn.call(event, ThreadsafeFunctionCallMode::NonBlocking) != Status::Ok {
+                        eprintln!("ws open event call failed");
+                    }
                 }
 
                 let state_clone = state.clone();
