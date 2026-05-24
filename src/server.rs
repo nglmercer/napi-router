@@ -181,7 +181,9 @@ impl HttpServer {
     pub fn ws_subscribe(&self, connection_id: String, topic: String) {
         let mut subs = self.inner.ws_subscriptions.lock().unwrap();
         let mut topics = self.inner.ws_topics.lock().unwrap();
-        subs.entry(connection_id.clone()).or_default().insert(topic.clone());
+        subs.entry(connection_id.clone())
+            .or_default()
+            .insert(topic.clone());
         topics.entry(topic).or_default().insert(connection_id);
     }
 
@@ -200,7 +202,9 @@ impl HttpServer {
     #[napi]
     pub fn ws_is_subscribed(&self, connection_id: String, topic: String) -> bool {
         let subs = self.inner.ws_subscriptions.lock().unwrap();
-        subs.get(&connection_id).map(|s| s.contains(&topic)).unwrap_or(false)
+        subs.get(&connection_id)
+            .map(|s| s.contains(&topic))
+            .unwrap_or(false)
     }
 
     #[napi]
@@ -228,7 +232,7 @@ impl HttpServer {
 
         let mut sent_count = 0;
         let msg = tokio_tungstenite::tungstenite::Message::Text(message);
-        
+
         for id in target_ids {
             let tx = {
                 let senders = self.inner.ws_senders.lock().unwrap();
@@ -317,7 +321,12 @@ async fn handle_request(
         let headers: HashMap<String, String> = req_ref
             .headers()
             .iter()
-            .map(|(k, v)| (k.as_str().to_lowercase(), v.to_str().unwrap_or("").to_string()))
+            .map(|(k, v)| {
+                (
+                    k.as_str().to_lowercase(),
+                    v.to_str().unwrap_or("").to_string(),
+                )
+            })
             .collect();
         (method, url, path, query, headers, None)
     } else {
@@ -348,13 +357,19 @@ async fn handle_request(
         let headers: HashMap<String, String> = parts
             .headers
             .iter()
-            .map(|(k, v)| (k.as_str().to_lowercase(), v.to_str().unwrap_or("").to_string()))
+            .map(|(k, v)| {
+                (
+                    k.as_str().to_lowercase(),
+                    v.to_str().unwrap_or("").to_string(),
+                )
+            })
             .collect();
         (method, url, path, query, headers, body_str)
     };
 
     let request_id = format!("req_{}", generate_id());
 
+    let remote_addr_clone = remote_addr.clone();
     let request_data = RequestData {
         method,
         url,
@@ -362,7 +377,7 @@ async fn handle_request(
         headers,
         body: body_str,
         query,
-        remote_addr,
+        remote_addr: remote_addr_clone,
     };
 
     let (tx, rx) = oneshot::channel::<ResponseData>();
@@ -402,7 +417,14 @@ async fn handle_request(
 
     if response_data.upgrade.unwrap_or(false) && is_upgrade {
         if let (Some(req), Some(connection_id)) = (req_opt.take(), response_data.connection_id) {
-            return handle_ws_upgrade(req, state, remote_addr, connection_id, response_data.headers).await;
+            return handle_ws_upgrade(
+                req,
+                state,
+                remote_addr.clone(),
+                connection_id,
+                response_data.headers,
+            )
+            .await;
         }
     }
 
@@ -436,7 +458,7 @@ async fn handle_ws_upgrade(
     for (k, v) in extra_headers {
         upgrade_response.headers_mut().append(
             hyper::header::HeaderName::from_bytes(k.as_bytes()).unwrap(),
-            hyper::header::HeaderValue::from_str(&v).unwrap()
+            hyper::header::HeaderValue::from_str(&v).unwrap(),
         );
     }
 
@@ -480,8 +502,14 @@ async fn handle_ws_upgrade(
                     }
                 };
 
-                websocket::handle_ws_connection(io, connection_id.clone(), senders, event_tsfn, Box::new(cleanup))
-                    .await;
+                websocket::handle_ws_connection(
+                    io,
+                    connection_id.clone(),
+                    senders,
+                    event_tsfn,
+                    Box::new(cleanup),
+                )
+                .await;
             }
             Err(e) => {
                 eprintln!("websocket upgrade error: {}", e);
