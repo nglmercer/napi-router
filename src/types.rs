@@ -8,7 +8,7 @@ pub struct RequestData {
     pub url: String,
     pub path: String,
     pub headers: HashMap<String, String>,
-    pub body: Option<String>,
+    pub body: Option<Vec<u8>>,
     pub query: HashMap<String, String>,
     pub remote_addr: String,
 }
@@ -18,7 +18,7 @@ pub struct RequestData {
 pub struct ResponseData {
     pub status: u16,
     pub headers: HashMap<String, String>,
-    pub body: Option<String>,
+    pub body: Option<Vec<u8>>,
 }
 
 #[napi(object)]
@@ -26,13 +26,6 @@ pub struct ResponseData {
 pub struct RequestCall {
     pub request: RequestData,
     pub request_id: String,
-}
-
-#[napi(object)]
-#[derive(Clone, Debug)]
-pub struct RouteMatchResult {
-    pub handler_id: String,
-    pub params: HashMap<String, String>,
 }
 
 #[napi(object)]
