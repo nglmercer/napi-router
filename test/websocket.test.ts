@@ -209,10 +209,8 @@ describe('server.sendToWs()', () => {
     s.stop();
   });
 
-  it('silently ignores unknown connection IDs', async () => {
-    await expect(
-      echoServer.sendToWs('nonexistent-id', 'msg')
-    ).resolves.toBeUndefined();
+  it('silently ignores unknown connection IDs', () => {
+    expect(echoServer.sendToWs('nonexistent-id', 'msg')).toBeUndefined();
   });
 });
 

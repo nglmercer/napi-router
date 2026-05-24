@@ -422,7 +422,9 @@ async fn handle_request(
             request: request_data,
             request_id: request_id.clone(),
         };
-        tsfn.call(call, ThreadsafeFunctionCallMode::NonBlocking);
+        if let Err(e) = tsfn.call(call, ThreadsafeFunctionCallMode::NonBlocking) {
+            eprintln!("on_request call failed: {}", e);
+        }
     } else {
         state.pending.lock().unwrap().remove(&request_id);
         return Ok(Response::builder()
