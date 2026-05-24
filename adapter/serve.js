@@ -130,19 +130,19 @@ class ServerHandle {
 }
 
 function toWebRequest(data, baseUrl) {
-  const url = data.url.startsWith("http") ? data.url : `${baseUrl}${data.url}`;
+  const url = data.url[0] === '/' ? `${baseUrl}${data.url}` : data.url;
 
   const h = data.headers;
-  const headers = new Headers();
+  const headersObj = {};
   if (h) {
     for (let i = 0; i < h.length; i += 2) {
-      headers.set(h[i], h[i + 1]);
+      headersObj[h[i]] = h[i + 1];
     }
   }
 
   const init = {
     method: data.method,
-    headers,
+    headers: headersObj,
   };
 
   if (
@@ -151,7 +151,7 @@ function toWebRequest(data, baseUrl) {
     data.method !== "GET" &&
     data.method !== "HEAD"
   ) {
-    init.body = new Uint8Array(data.body);
+    init.body = data.body;
   }
 
   return new Request(url, init);

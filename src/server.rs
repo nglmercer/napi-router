@@ -16,7 +16,6 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::{AbortHandle, JoinHandle};
 
-
 use crate::types::*;
 use crate::websocket;
 
@@ -58,7 +57,9 @@ impl HttpServer {
             inner: Arc::new(ServerInner {
                 on_request: std::sync::Mutex::new(None),
                 on_ws_event: std::sync::Mutex::new(None),
-                pending: (0..PENDING_SHARDS).map(|_| std::sync::Mutex::new(HashMap::new())).collect(),
+                pending: (0..PENDING_SHARDS)
+                    .map(|_| std::sync::Mutex::new(HashMap::new()))
+                    .collect(),
                 ws_senders: Arc::new(DashMap::new()),
                 ws_subscriptions: DashMap::new(),
                 ws_topics: DashMap::new(),
@@ -69,13 +70,19 @@ impl HttpServer {
         }
     }
 
-    #[napi]
-    pub fn on_request(&self, callback: RequestTsfn) -> Result<()> {
-        *self.inner.on_request.lock().unwrap() = Some(Arc::new(callback));
+    #[napi(ts_args_type = "callback: (data: { request: RequestData, requestId: number }) => void")]
+    pub fn on_request(&self, callback: RequestTsfn) -> napi::Result<()> {
+        let mut guard = self
+            .inner
+            .on_request
+            .lock()
+            .map_err(|_| napi::Error::from_reason("Failed to lock on_request mutex"))?;
+
+        *guard = Some(Arc::new(callback));
         Ok(())
     }
 
-    #[napi]
+    #[napi(ts_args_type = "callback: (event: WsEvent) => void")]
     pub fn on_ws_event(&self, callback: WsEventTsfn) -> Result<()> {
         *self.inner.on_ws_event.lock().unwrap() = Some(Arc::new(callback));
         Ok(())
@@ -118,7 +125,13 @@ impl HttpServer {
         }
 
         if close_active_connections.unwrap_or(false) {
-            let handles = self.inner.conn_abort_handles.lock().unwrap().drain(..).collect::<Vec<_>>();
+            let handles = self
+                .inner
+                .conn_abort_handles
+                .lock()
+                .unwrap()
+                .drain(..)
+                .collect::<Vec<_>>();
             for h in handles {
                 h.abort();
             }
@@ -140,7 +153,13 @@ impl HttpServer {
     }
 
     #[napi]
-    pub fn send_response_text(&self, request_id: u32, status: u16, headers: Vec<String>, body: String) {
+    pub fn send_response_text(
+        &self,
+        request_id: u32,
+        status: u16,
+        headers: Vec<String>,
+        body: String,
+    ) {
         let idx = (request_id as usize) % self.inner.pending.len();
         if let Some(tx) = self.inner.pending[idx].lock().unwrap().remove(&request_id) {
             let response = ResponseData {
@@ -155,7 +174,13 @@ impl HttpServer {
     }
 
     #[napi]
-    pub fn send_response_buffer(&self, request_id: u32, status: u16, headers: Vec<String>, body: Vec<u8>) {
+    pub fn send_response_buffer(
+        &self,
+        request_id: u32,
+        status: u16,
+        headers: Vec<String>,
+        body: Vec<u8>,
+    ) {
         let idx = (request_id as usize) % self.inner.pending.len();
         if let Some(tx) = self.inner.pending[idx].lock().unwrap().remove(&request_id) {
             let response = ResponseData {
@@ -171,7 +196,9 @@ impl HttpServer {
 
     #[napi]
     pub fn pending_count(&self) -> u32 {
-        self.inner.pending.iter()
+        self.inner
+            .pending
+            .iter()
             .map(|s| s.lock().unwrap().len() as u32)
             .sum()
     }
@@ -179,7 +206,10 @@ impl HttpServer {
     #[napi]
     pub fn ws_send(&self, connection_id: String, message: String) -> i32 {
         let len = message.len() as i32;
-        let tx = self.inner.ws_senders.get(&connection_id)
+        let tx = self
+            .inner
+            .ws_senders
+            .get(&connection_id)
             .map(|e| e.value().clone());
         if let Some(tx) = tx {
             match tx.try_send(tokio_tungstenite::tungstenite::Message::Text(message)) {
@@ -195,7 +225,10 @@ impl HttpServer {
     #[napi]
     pub fn ws_send_binary(&self, connection_id: String, data: Vec<u8>) -> i32 {
         let len = data.len() as i32;
-        let tx = self.inner.ws_senders.get(&connection_id)
+        let tx = self
+            .inner
+            .ws_senders
+            .get(&connection_id)
             .map(|e| e.value().clone());
         if let Some(tx) = tx {
             match tx.try_send(tokio_tungstenite::tungstenite::Message::Binary(data)) {
@@ -210,7 +243,10 @@ impl HttpServer {
 
     #[napi]
     pub fn ws_close(&self, connection_id: String) {
-        let tx = self.inner.ws_senders.get(&connection_id)
+        let tx = self
+            .inner
+            .ws_senders
+            .get(&connection_id)
             .map(|e| e.value().clone());
         if let Some(tx) = tx {
             let _ = tx.try_send(tokio_tungstenite::tungstenite::Message::Close(None));
@@ -224,18 +260,22 @@ impl HttpServer {
 
     #[napi]
     pub fn ws_connection_ids(&self) -> Vec<String> {
-        self.inner.ws_senders.iter()
+        self.inner
+            .ws_senders
+            .iter()
             .map(|e| e.key().clone())
             .collect()
     }
 
     #[napi]
     pub fn ws_subscribe(&self, connection_id: String, topic: String) {
-        self.inner.ws_subscriptions
+        self.inner
+            .ws_subscriptions
             .entry(connection_id.clone())
             .or_insert_with(HashSet::new)
             .insert(topic.clone());
-        self.inner.ws_topics
+        self.inner
+            .ws_topics
             .entry(topic)
             .or_insert_with(HashSet::new)
             .insert(connection_id);
@@ -253,7 +293,8 @@ impl HttpServer {
 
     #[napi]
     pub fn ws_is_subscribed(&self, connection_id: String, topic: String) -> bool {
-        self.inner.ws_subscriptions
+        self.inner
+            .ws_subscriptions
             .get(&connection_id)
             .map(|e| e.value().contains(&topic))
             .unwrap_or(false)
@@ -272,7 +313,9 @@ impl HttpServer {
     fn publish_internal(&self, exclude_id: Option<String>, topic: String, message: String) -> u32 {
         let target_ids: Vec<String> = {
             if let Some(entry) = self.inner.ws_topics.get(&topic) {
-                entry.value().iter()
+                entry
+                    .value()
+                    .iter()
                     .filter(|id| Some(*id) != exclude_id.as_ref())
                     .cloned()
                     .collect()
@@ -285,8 +328,7 @@ impl HttpServer {
         let msg = tokio_tungstenite::tungstenite::Message::Text(message);
 
         for id in target_ids {
-            let tx = self.inner.ws_senders.get(&id)
-                .map(|e| e.value().clone());
+            let tx = self.inner.ws_senders.get(&id).map(|e| e.value().clone());
             if let Some(tx) = tx {
                 if tx.try_send(msg.clone()).is_ok() {
                     sent_count += 1;
@@ -337,7 +379,8 @@ async fn handle_connection(
         handle_request(req, state.clone(), remote_addr.clone())
     });
 
-    let mut builder = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
+    let mut builder =
+        hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
     builder
         .http1()
         .max_buf_size(65536)
@@ -538,7 +581,8 @@ async fn handle_ws_upgrade(
                 let state_clone = state.clone();
                 let cid_clone = connection_id.clone();
                 let cleanup = move || {
-                    if let Some((_, user_topics)) = state_clone.ws_subscriptions.remove(&cid_clone) {
+                    if let Some((_, user_topics)) = state_clone.ws_subscriptions.remove(&cid_clone)
+                    {
                         for topic in user_topics {
                             if let Some(mut entry) = state_clone.ws_topics.get_mut(&topic) {
                                 entry.remove(&cid_clone);

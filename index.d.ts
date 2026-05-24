@@ -2,8 +2,8 @@
 /* eslint-disable */
 export declare class HttpServer {
   constructor()
-  onRequest(callback: RequestTsfn): void
-  onWsEvent(callback: WsEventTsfn): void
+  onRequest(callback: (data: { request: RequestData, requestId: number }) => void): void
+  onWsEvent(callback: (event: WsEvent) => void): void
   listen(port: number, hostname?: string | undefined | null): Promise<ServerInfo>
   close(closeActiveConnections?: boolean | undefined | null): Promise<void>
   sendResponse(requestId: number, response: ResponseData): void
@@ -22,24 +22,20 @@ export declare class HttpServer {
   serverPublish(topic: string, message: string): number
 }
 
-export interface RequestCall {
-  request: RequestData
-  requestId: number
-}
-
 export interface RequestData {
   method: string
   url: string
   path: string
   headers: Array<string>
-  body?: Array<number>
+  body?: Uint8Array
   remoteAddr: string
+  requestId: number
 }
 
 export interface ResponseData {
   status: number
   headers: Array<string>
-  body?: Array<number>
+  body?: Uint8Array
   upgrade?: boolean
   connectionId?: string
 }
@@ -53,7 +49,7 @@ export interface WsEvent {
   eventType: string
   connectionId: string
   text?: string
-  binary?: Array<number>
+  binary?: Uint8Array
   error?: string
   code?: number
   reason?: string
