@@ -22,10 +22,19 @@
   "type": "module",
   "main": "index.js",
   "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./index.mjs",
+      "require": "./index.js",
+      "default": "./index.mjs"
+    }
+  },
   "files": [
     "index.js",
     "index.d.ts",
+    "index.mjs",
     "*.node",
+    "lib/",
     "adapter/",
     "README.md",
     "LICENSE"
@@ -34,7 +43,7 @@
     "build": "napi build --platform --release",
     "build:debug": "napi build --platform",
     "clean": "napi clean && cargo clean",
-    "test": "node --test test/*.test.js",
+    "test": "bun test",
     "dev": "node --watch examples/dev.ts",
     "type-check": "tsc --noEmit",
     "format": "prettier --write index.js index.d.ts adapter/ examples/",

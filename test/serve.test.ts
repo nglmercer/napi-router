@@ -1,8 +1,8 @@
 import { describe, it, before, after } from "node:test";
 import { strict as assert } from "node:assert";
-import { serve, trySterve } from "../index.js";
+import { serve, tryServe, Server } from "../index.js";
 
-let server: ReturnType<typeof serve>;
+let server!: Server;
 const port = 9876;
 
 describe("napi-router serve()", () => {
@@ -96,7 +96,7 @@ describe("napi-router serve()", () => {
 });
 
 describe("WebSocket", () => {
-  let wsServer;
+  let wsServer!: Server;
   const wsPort = 9878;
 
   before(async () => {
