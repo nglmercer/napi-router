@@ -7,7 +7,7 @@ pub struct RequestData {
     pub url: String,
     pub path: String,
     pub headers: Vec<String>,
-    #[napi(ts_type = "Uint8Array")]
+    /// Exposed to JS as a zero-copy `Uint8Array`.
     pub body: Option<Vec<u8>>,
     pub remote_addr: String,
     pub request_id: u32,
@@ -18,7 +18,7 @@ pub struct RequestData {
 pub struct ResponseData {
     pub status: u16,
     pub headers: Vec<String>,
-    #[napi(ts_type = "Uint8Array")]
+    /// Accepted from JS as `Uint8Array` OR `number[]` via the adapter.
     pub body: Option<Vec<u8>>,
     pub upgrade: Option<bool>,
     pub connection_id: Option<String>,
@@ -30,7 +30,7 @@ pub struct WsEvent {
     pub event_type: String,
     pub connection_id: String,
     pub text: Option<String>,
-    #[napi(ts_type = "Uint8Array")]
+    /// Exposed to JS as a zero-copy `Uint8Array`.
     pub binary: Option<Vec<u8>>,
     pub error: Option<String>,
     pub code: Option<u16>,

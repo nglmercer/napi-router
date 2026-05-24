@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use napi::bindgen_prelude::*;
+use napi::bindgen_prelude::{Error, Result};
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::{Status, Unknown};
 use napi_derive::napi;
@@ -26,7 +26,7 @@ type WsEventTsfn = ThreadsafeFunction<WsEvent, Unknown<'static>, WsEvent, Status
 struct ServerInner {
     on_request: Mutex<Option<Arc<RequestTsfn>>>,
     on_ws_event: Mutex<Option<Arc<WsEventTsfn>>>,
-    pending: Vec<Mutex<HashMap<u32, oneshot::Sender<ResponseData>>>>,
+    pending: DashMap<u32, oneshot::Sender<ResponseData>>,
     ws_senders: websocket::WsSenders,
     ws_subscriptions: DashMap<String, HashSet<String>>,
     ws_topics: DashMap<String, HashSet<String>>,
@@ -57,9 +57,7 @@ impl HttpServer {
             inner: Arc::new(ServerInner {
                 on_request: std::sync::Mutex::new(None),
                 on_ws_event: std::sync::Mutex::new(None),
-                pending: (0..PENDING_SHARDS)
-                    .map(|_| std::sync::Mutex::new(HashMap::new()))
-                    .collect(),
+                pending: DashMap::with_capacity_and_shard_amount(1024, PENDING_SHARDS),
                 ws_senders: Arc::new(DashMap::new()),
                 ws_subscriptions: DashMap::new(),
                 ws_topics: DashMap::new(),
@@ -139,15 +137,12 @@ impl HttpServer {
 
         *self.inner.on_request.lock().unwrap() = None;
         *self.inner.on_ws_event.lock().unwrap() = None;
-        for shard in &self.inner.pending {
-            shard.lock().unwrap().clear();
-        }
+        self.inner.pending.clear();
     }
 
     #[napi]
     pub fn send_response(&self, request_id: u32, response: ResponseData) {
-        let idx = (request_id as usize) % self.inner.pending.len();
-        if let Some(tx) = self.inner.pending[idx].lock().unwrap().remove(&request_id) {
+        if let Some((_, tx)) = self.inner.pending.remove(&request_id) {
             let _ = tx.send(response);
         }
     }
@@ -160,8 +155,7 @@ impl HttpServer {
         headers: Vec<String>,
         body: String,
     ) {
-        let idx = (request_id as usize) % self.inner.pending.len();
-        if let Some(tx) = self.inner.pending[idx].lock().unwrap().remove(&request_id) {
+        if let Some((_, tx)) = self.inner.pending.remove(&request_id) {
             let response = ResponseData {
                 status,
                 headers,
@@ -181,8 +175,7 @@ impl HttpServer {
         headers: Vec<String>,
         body: Vec<u8>,
     ) {
-        let idx = (request_id as usize) % self.inner.pending.len();
-        if let Some(tx) = self.inner.pending[idx].lock().unwrap().remove(&request_id) {
+        if let Some((_, tx)) = self.inner.pending.remove(&request_id) {
             let response = ResponseData {
                 status,
                 headers,
@@ -196,11 +189,7 @@ impl HttpServer {
 
     #[napi]
     pub fn pending_count(&self) -> u32 {
-        self.inner
-            .pending
-            .iter()
-            .map(|s| s.lock().unwrap().len() as u32)
-            .sum()
+        self.inner.pending.len() as u32
     }
 
     #[napi]
@@ -272,12 +261,12 @@ impl HttpServer {
         self.inner
             .ws_subscriptions
             .entry(connection_id.clone())
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(topic.clone());
         self.inner
             .ws_topics
             .entry(topic)
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(connection_id);
     }
 
@@ -466,10 +455,7 @@ async fn handle_request(
     };
 
     let (tx, rx) = oneshot::channel::<ResponseData>();
-    {
-        let idx = (request_id as usize) % state.pending.len();
-        state.pending[idx].lock().unwrap().insert(request_id, tx);
-    }
+    state.pending.insert(request_id, tx);
 
     let tsfn = {
         let lock = state.on_request.lock().unwrap();
@@ -481,8 +467,7 @@ async fn handle_request(
             eprintln!("on_request call failed");
         }
     } else {
-        let idx = (request_id as usize) % state.pending.len();
-        state.pending[idx].lock().unwrap().remove(&request_id);
+        state.pending.remove(&request_id);
         return Ok(Response::builder()
             .status(StatusCode::INTERNAL_SERVER_ERROR)
             .body(Full::new(Bytes::from("no fetch handler registered")))
@@ -504,7 +489,7 @@ async fn handle_request(
             return handle_ws_upgrade(
                 req,
                 state,
-                remote_addr,
+                remote_addr.clone(),
                 connection_id,
                 response_data.headers,
             )

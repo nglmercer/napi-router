@@ -27,7 +27,8 @@ export interface RequestData {
   url: string
   path: string
   headers: Array<string>
-  body?: Uint8Array
+  /** Exposed to JS as a zero-copy `Uint8Array`. */
+  body?: Array<number>
   remoteAddr: string
   requestId: number
 }
@@ -35,7 +36,8 @@ export interface RequestData {
 export interface ResponseData {
   status: number
   headers: Array<string>
-  body?: Uint8Array
+  /** Accepted from JS as `Uint8Array` OR `number[]` via the adapter. */
+  body?: Array<number> 
   upgrade?: boolean
   connectionId?: string
 }
@@ -49,7 +51,8 @@ export interface WsEvent {
   eventType: string
   connectionId: string
   text?: string
-  binary?: Uint8Array
+  /** Exposed to JS as a zero-copy `Uint8Array`. */
+  binary?: Array<number>
   error?: string
   code?: number
   reason?: string
