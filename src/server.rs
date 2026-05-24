@@ -460,6 +460,7 @@ async fn handle_ws_upgrade(
                     error: None,
                     code: None,
                     reason: None,
+                    remote_addr: Some(_remote_addr.clone()),
                 };
                 if let Some(ref tsfn) = event_tsfn {
                     tsfn.call(event, ThreadsafeFunctionCallMode::NonBlocking);

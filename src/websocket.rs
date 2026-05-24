@@ -108,6 +108,7 @@ pub async fn handle_ws_connection(
                                 error: None,
                                 code: None,
                                 reason: None,
+                                remote_addr: None,
                             },
                             tungstenite::Message::Binary(data) => WsEvent {
                                 event_type: "message".to_string(),
@@ -117,6 +118,7 @@ pub async fn handle_ws_connection(
                                 error: None,
                                 code: None,
                                 reason: None,
+                                remote_addr: None,
                             },
                             tungstenite::Message::Close(frame) => {
                                 let (code, reason) = frame
@@ -130,6 +132,7 @@ pub async fn handle_ws_connection(
                                     error: None,
                                     code,
                                     reason,
+                                    remote_addr: None,
                                 }
                             }
                             tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_) => {
@@ -154,6 +157,7 @@ pub async fn handle_ws_connection(
                             error: Some(e.to_string()),
                             code: None,
                             reason: None,
+                            remote_addr: None,
                         };
                         tsfn.call(event, ThreadsafeFunctionCallMode::NonBlocking);
                     }
@@ -182,6 +186,7 @@ pub async fn handle_ws_connection(
             error: None,
             code: Some(1000),
             reason: Some("Connection closed".to_string()),
+            remote_addr: None,
         };
         tsfn.call(event, ThreadsafeFunctionCallMode::NonBlocking);
     }

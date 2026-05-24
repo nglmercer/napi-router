@@ -40,6 +40,7 @@ pub struct WsEvent {
     pub error: Option<String>,
     pub code: Option<u16>,
     pub reason: Option<String>,
+    pub remote_addr: Option<String>,
 }
 
 #[napi(object)]

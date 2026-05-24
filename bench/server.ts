@@ -25,7 +25,7 @@ function rps(n: number, ms: number): string {
   return ((n / ms) * 1_000).toFixed(0);
 }
 
-async function measure(label: string, n: number, fn: () => Promise<void>): Promise<void> {
+async function measure(label: string, n: number, fn: () => Promise<unknown>): Promise<void> {
   const t0 = performance.now();
   let done = 0;
   while (done < n) {
