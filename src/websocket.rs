@@ -16,7 +16,8 @@ use tokio_tungstenite::tungstenite;
 use crate::types::WsEvent;
 
 pub type WsSenders = Arc<Mutex<HashMap<String, mpsc::Sender<tungstenite::Message>>>>;
-pub type WsEventTsfn = Arc<ThreadsafeFunction<WsEvent, Unknown<'static>, WsEvent, Status, false, false, 0>>;
+pub type WsEventTsfn =
+    Arc<ThreadsafeFunction<WsEvent, Unknown<'static>, WsEvent, Status, false, false, 0>>;
 
 pub fn is_ws_upgrade(req: &Request<Incoming>) -> bool {
     req.headers()

@@ -16,7 +16,8 @@ use tokio::sync::oneshot;
 use crate::types::*;
 use crate::websocket;
 
-type RequestTsfn = ThreadsafeFunction<RequestCall, Unknown<'static>, RequestCall, Status, false, false, 0>;
+type RequestTsfn =
+    ThreadsafeFunction<RequestCall, Unknown<'static>, RequestCall, Status, false, false, 0>;
 type WsEventTsfn = ThreadsafeFunction<WsEvent, Unknown<'static>, WsEvent, Status, false, false, 0>;
 
 struct ServerInner {
@@ -30,6 +31,12 @@ struct ServerInner {
 #[napi]
 pub struct HttpServer {
     inner: Arc<ServerInner>,
+}
+
+impl Default for HttpServer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[napi]
@@ -61,11 +68,7 @@ impl HttpServer {
 
     #[napi]
     pub async fn listen(&self, port: u16, hostname: Option<String>) -> Result<ServerInfo> {
-        let addr = format!(
-            "{}:{}",
-            hostname.unwrap_or_else(|| "0.0.0.0".into()),
-            port
-        );
+        let addr = format!("{}:{}", hostname.unwrap_or_else(|| "0.0.0.0".into()), port);
         let listener = TcpListener::bind(&addr)
             .await
             .map_err(|e| Error::from_reason(format!("Failed to bind: {}", e)))?;
@@ -114,7 +117,7 @@ impl HttpServer {
             senders.get(&connection_id).cloned()
         };
         if let Some(tx) = tx {
-            tx.send(tokio_tungstenite::tungstenite::Message::Text(message.into()))
+            tx.send(tokio_tungstenite::tungstenite::Message::Text(message))
                 .await
                 .map_err(|e| Error::from_reason(format!("ws_send failed: {}", e)))?;
         }
@@ -128,7 +131,7 @@ impl HttpServer {
             senders.get(&connection_id).cloned()
         };
         if let Some(tx) = tx {
-            tx.send(tokio_tungstenite::tungstenite::Message::Binary(data.into()))
+            tx.send(tokio_tungstenite::tungstenite::Message::Binary(data))
                 .await
                 .map_err(|e| Error::from_reason(format!("ws_send_binary failed: {}", e)))?;
         }
@@ -205,11 +208,10 @@ async fn handle_connection(
         handle_request(req, state.clone(), remote_addr.clone())
     });
 
-    if let Err(e) = hyper_util::server::conn::auto::Builder::new(
-        hyper_util::rt::TokioExecutor::new(),
-    )
-    .serve_connection(io, svc)
-    .await
+    if let Err(e) =
+        hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+            .serve_connection_with_upgrades(io, svc)
+            .await
     {
         eprintln!("connection error: {}", e);
     }
@@ -308,8 +310,7 @@ async fn handle_request(
     };
 
     let mut builder = Response::builder().status(
-        StatusCode::from_u16(response_data.status)
-            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+        StatusCode::from_u16(response_data.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
     );
 
     for (k, v) in &response_data.headers {
@@ -360,13 +361,8 @@ async fn handle_ws_upgrade(
                     tsfn.call(event, ThreadsafeFunctionCallMode::NonBlocking);
                 }
 
-                websocket::handle_ws_connection(
-                    io,
-                    connection_id.clone(),
-                    senders,
-                    event_tsfn,
-                )
-                .await;
+                websocket::handle_ws_connection(io, connection_id.clone(), senders, event_tsfn)
+                    .await;
             }
             Err(e) => {
                 eprintln!("websocket upgrade error: {}", e);
