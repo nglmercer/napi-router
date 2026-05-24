@@ -7,8 +7,8 @@
  * Compatible with: bun test
  */
 
-import { serve, tryServe } from '../adapter/serve.js';
-import type { Server, ServeOptions, WebSocketHandlers, ServerWebSocket } from '../adapter/serve.js';
+import { serve, tryServe } from '../adapter/serve.ts';
+import type { Server, ServeOptions, WebSocketHandlers, ServerWebSocket } from '../adapter/serve.ts';
 
 export { serve, tryServe };
 export type { Server, ServeOptions, WebSocketHandlers, ServerWebSocket };

@@ -28,12 +28,12 @@
       "default": "./index.js"
     },
     "./adapter": {
-      "import": "./adapter/serve.js",
-      "default": "./adapter/serve.js"
+      "import": "./adapter/serve.ts",
+      "default": "./adapter/serve.ts"
     },
     "./adapter/serve": {
-      "import": "./adapter/serve.js",
-      "default": "./adapter/serve.js"
+      "import": "./adapter/serve.ts",
+      "default": "./adapter/serve.ts"
     }
   },
   "files": [
@@ -53,7 +53,7 @@
     "bench": "bun bench/compare.ts",
     "bench:simple": "bun bench/server.ts",
     "type-check": "tsc --noEmit",
-    "format": "prettier --write index.js index.d.ts adapter/ examples/",
+    "format": "prettier --write index.js index.d.ts adapter/**/*.ts examples/",
     "lint": "rustup run stable cargo clippy -- -D warnings"
   },
   "devDependencies": {

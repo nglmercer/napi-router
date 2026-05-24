@@ -16,7 +16,7 @@
     "removeComments": true,
     "sourceMap": false,
     "outDir": "./dist",
-    "lib": ["ES2022"],
+    "lib": ["ES2022", "DOM"],
     "resolveJsonModule": true,
     "declaration": true,
     "declarationMap": false,
@@ -27,6 +27,7 @@
   },
   "include": [
     "src/**/*.ts",
+    "adapter/**/*.ts",
     "examples/**/*.ts",
     "scripts/**/*.ts",
     "dist/**/*.d.ts",
