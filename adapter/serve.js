@@ -10,6 +10,33 @@ const native = _require(resolve(__dirname, "../index.js"));
 const { HttpServer } = native;
 
 // ---------------------------------------------------------------------------
+// Patch global Response to capture body synchronously, avoiding the
+// microtask delay of await response.text() for simple string bodies.
+// ---------------------------------------------------------------------------
+const OrigResponse = globalThis.Response;
+const OrigResponseJSON = OrigResponse.json;
+
+class FastResponse extends OrigResponse {
+  constructor(body, init) {
+    super(body, init);
+    if (typeof body === "string") {
+      this._rawBody = body;
+    }
+  }
+
+  static json(data, init) {
+    const body = JSON.stringify(data);
+    const headers = { ...(init?.headers ?? {}), "content-type": "application/json" };
+    const resp = Reflect.construct(OrigResponse, [body, { ...init, headers }], FastResponse);
+    resp._rawBody = body;
+    return resp;
+  }
+}
+FastResponse.error = OrigResponse.error;
+FastResponse.redirect = OrigResponse.redirect;
+globalThis.Response = FastResponse;
+
+// ---------------------------------------------------------------------------
 // Request context tracking (WeakMap so GC can collect when request is done)
 // ---------------------------------------------------------------------------
 const requestContexts = new WeakMap();
@@ -133,9 +160,12 @@ class ServerHandle {
 function toWebRequest(data, baseUrl) {
   const url = data.url.startsWith("http") ? data.url : `${baseUrl}${data.url}`;
 
+  const h = data.headers;
   const headers = new Headers();
-  for (const [k, v] of Object.entries(data.headers ?? {})) {
-    headers.set(k, v);
+  if (h) {
+    for (const k in h) {
+      headers.set(k, h[k]);
+    }
   }
 
   const init = {
@@ -159,24 +189,25 @@ function toWebRequest(data, baseUrl) {
 // Response bridge
 // ---------------------------------------------------------------------------
 
-async function fromWebResponse(response) {
+function fromWebResponse(response) {
   const headers = {};
   response.headers.forEach((value, key) => {
     headers[key] = value;
   });
 
-  let body = null;
-  try {
-    body = await response.text();
-  } catch {
-    body = "";
+  const raw = response._rawBody;
+  if (raw !== undefined) {
+    return {
+      status: response.status,
+      headers,
+      body: raw,
+    };
   }
 
-  return {
-    status: response.status,
-    headers,
-    body,
-  };
+  return response.text().then(
+    (body) => ({ status: response.status, headers, body }),
+    () => ({ status: response.status, headers, body: "" }),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -367,8 +398,12 @@ export async function serve(options) {
       return;
     }
 
-    const responseData = await fromWebResponse(response);
-    raw.sendResponse(requestId, responseData);
+    const responseData = fromWebResponse(response);
+    if (typeof responseData.then === "function") {
+      raw.sendResponse(requestId, await responseData);
+    } else {
+      raw.sendResponse(requestId, responseData);
+    }
   });
 
   const info = await raw.listen(port, hostname);

@@ -358,17 +358,24 @@ async fn handle_request(
     } else {
         let req = req_opt.take().unwrap();
         let (parts, body) = req.into_parts();
-        let body_bytes = match body.collect().await {
-            Ok(collected) => collected.to_bytes(),
-            Err(e) => {
-                return Ok(Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .body(Full::new(Bytes::from(format!("body error: {}", e))))
-                    .unwrap());
-            }
+        let method_str = parts.method.to_string();
+        let is_get_head = parts.method == hyper::Method::GET
+            || parts.method == hyper::Method::HEAD
+            || parts.method == hyper::Method::OPTIONS;
+        let body_str = if is_get_head {
+            None
+        } else {
+            let body_bytes = match body.collect().await {
+                Ok(collected) => collected.to_bytes(),
+                Err(e) => {
+                    return Ok(Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(Full::new(Bytes::from(format!("body error: {}", e))))
+                        .unwrap());
+                }
+            };
+            String::from_utf8(body_bytes.to_vec()).ok()
         };
-        let body_str = String::from_utf8(body_bytes.to_vec()).ok();
-        let method = parts.method.to_string();
         let url = parts.uri.to_string();
         let path = parts.uri.path().to_string();
         let query: HashMap<String, String> = parts
@@ -390,7 +397,7 @@ async fn handle_request(
                 )
             })
             .collect();
-        (method, url, path, query, headers, body_str)
+        (method_str, url, path, query, headers, body_str)
     };
 
     let request_id = format!("req_{}", generate_id());

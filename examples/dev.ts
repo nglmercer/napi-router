@@ -1,7 +1,7 @@
 import { serve } from "../adapter/serve.js";
 
 const server = await serve({
-  port: 3000,
+  port: 9876,
   hostname: "0.0.0.0",
 
   async fetch(req) {
