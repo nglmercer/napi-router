@@ -65,6 +65,7 @@ pub async fn handle_ws_connection(
     connection_id: String,
     senders: WsSenders,
     event_tsfn: Option<WsEventTsfn>,
+    cleanup: Box<dyn FnOnce() + Send + 'static>,
 ) {
     use tokio_tungstenite::WebSocketStream;
     use tungstenite::protocol::Role;
@@ -169,6 +170,8 @@ pub async fn handle_ws_connection(
         let mut map = senders_recv.lock().unwrap();
         map.remove(&connection_id);
     }
+
+    cleanup();
 
     if let Some(ref tsfn) = event_tsfn_for_disconnect {
         let event = WsEvent {

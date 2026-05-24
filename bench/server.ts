@@ -45,7 +45,7 @@ async function benchmark(): Promise<void> {
   const server: Server = await serve({
     port: PORT,
     hostname: '0.0.0.0',
-    async fetch(req) {
+    async fetch(req, _server) {
       const url = new URL(req.url);
 
       if (url.pathname === '/json') {

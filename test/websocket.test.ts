@@ -370,19 +370,20 @@ describe('WebSocket — close handler', () => {
 describe('WebSocket — concurrent connections', () => {
   it('echoes independently to each connected client', async () => {
     const N = 5;
-    const sockets = await Promise.all(
-      Array.from({ length: N }, () => wsConnect(echoServer))
-    );
+    const sockets: WebSocket[] = [];
+    for (let i = 0; i < N; i++) {
+      sockets.push(await wsConnect(echoServer));
+    }
 
     // Each client sends a unique message and expects its own echo
-    const results = await Promise.all(
-      sockets.map(async (ws, i) => {
-        const msg = `client-${i}`;
-        const p = nextMessage(ws);
-        ws.send(msg);
-        return p;
-      })
-    );
+    const results: string[] = [];
+    for (let i = 0; i < N; i++) {
+      const ws = sockets[i];
+      const msg = `client-${i}`;
+      const p = nextMessage(ws);
+      ws.send(msg);
+      results.push((await p) as string);
+    }
 
     for (let i = 0; i < N; i++) {
       expect(results[i]).toBe(`client-${i}`);

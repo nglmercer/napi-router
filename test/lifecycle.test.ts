@@ -128,9 +128,9 @@ describe('Default option values', () => {
       const s = await serve({ fetch: () => new Response('default') });
       expect(s.port).toBe(3000);
       s.stop();
-    } catch (e: any) {
+    } catch (e: unknown) {
       // Port 3000 might already be in use in CI — skip gracefully
-      if (/Failed to bind|address already in use/i.test(e.message)) {
+      if (e instanceof Error && /Failed to bind|address already in use/i.test(e.message)) {
         console.warn('[skip] Port 3000 is already in use');
       } else {
         throw e;

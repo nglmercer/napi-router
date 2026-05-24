@@ -216,10 +216,9 @@ async function main(): Promise<void> {
   // Download assets
   let success = 0, failed = 0, skipped = 0;
 
-  for (let i = 0; i < assets.length; i++) {
-    const asset = assets[i];
+  for (const asset of assets) {
     const dest = path.join(outDir, asset.name);
-    console.log(`\n[${i + 1}/${assets.length}] ${asset.name} (${formatBytes(asset.size)})`);
+    console.log(`\n[${success + failed + skipped + 1}/${assets.length}] ${asset.name} (${formatBytes(asset.size)})`);
 
     // Skip if exists with same size
     if (fs.existsSync(dest) && fs.statSync(dest).size === asset.size) {
@@ -229,11 +228,11 @@ async function main(): Promise<void> {
     }
 
     try {
-      await downloadFile(asset.url, dest, { ...auth, Accept: "application/octet-stream" } as Record<string, string>);
+      await downloadFile(asset.url, dest, { ...auth, Accept: "application/octet-stream" });
       console.log(`  Saved: ${dest}`);
       success++;
-    } catch (e) {
-      const error = e as Error;
+    } catch (e: unknown) {
+      const error = e instanceof Error ? e : new Error(String(e));
       console.error(`  Failed: ${error.message}`);
       if (fs.existsSync(dest)) fs.unlinkSync(dest);
       failed++;
@@ -246,8 +245,8 @@ async function main(): Promise<void> {
   if (failed > 0) process.exit(1);
 }
 
-main().catch((e) => {
-  const error = e as Error;
+main().catch((e: unknown) => {
+  const error = e instanceof Error ? e : new Error(String(e));
   console.error(`Error: ${error.message}`);
   process.exit(1);
 });

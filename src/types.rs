@@ -19,6 +19,8 @@ pub struct ResponseData {
     pub status: u16,
     pub headers: HashMap<String, String>,
     pub body: Option<String>,
+    pub upgrade: Option<bool>,
+    pub connection_id: Option<String>,
 }
 
 #[napi(object)]

@@ -15,14 +15,27 @@ export type { HttpServer };
 export interface ServerWebSocket {
   /** Unique connection identifier assigned by napi-router */
   readonly id: string;
+  /** Contextual data attached during upgrade */
+  readonly data: any;
   /** Send a text message */
-  send(message: string): Promise<void>;
+  send(message: string): number;
   /** Send binary data */
-  send(data: Uint8Array): Promise<void>;
+  send(data: Uint8Array | ArrayBuffer): number;
   /** Close the connection */
-  close(code?: number, reason?: string): Promise<void>;
+  close(code?: number, reason?: string): void;
   /** Always 1 (OPEN) while the handler is invoked */
   readonly readyState: number;
+  /** Remote IP address */
+  readonly remoteAddress: string;
+
+  /** Subscribe to a topic */
+  subscribe(topic: string): void;
+  /** Unsubscribe from a topic */
+  unsubscribe(topic: string): void;
+  /** Publish a message to a topic */
+  publish(topic: string, message: string | Uint8Array | ArrayBuffer): void;
+  /** Check if subscribed to a topic */
+  isSubscribed(topic: string): boolean;
 }
 
 export interface WebSocketHandlers {
@@ -34,6 +47,10 @@ export interface WebSocketHandlers {
   close?(ws: ServerWebSocket, code: number, reason: string): void | Promise<void>;
   /** Called on a WebSocket error */
   error?(ws: ServerWebSocket, error: Error): void | Promise<void>;
+  
+  maxPayloadLength?: number;
+  idleTimeout?: number;
+  perMessageDeflate?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,13 +73,25 @@ export declare class Server {
   stop(closeActiveConnections?: boolean): void;
 
   /** Send a text message to a specific WebSocket connection */
-  sendToWs(connectionId: string, message: string): Promise<void>;
+  sendToWs(connectionId: string, message: string): void;
   /** Send binary data to a specific WebSocket connection */
-  sendBinaryToWs(connectionId: string, data: number[]): Promise<void>;
+  sendBinaryToWs(connectionId: string, data: number[]): void;
   /** Close a specific WebSocket connection */
-  closeWs(connectionId: string): Promise<void>;
+  closeWs(connectionId: string): void;
   /** All currently open WebSocket connection IDs */
   readonly wsConnectionIds: string[];
+
+  /** Upgrade the request to a WebSocket connection */
+  upgrade(
+    req: Request,
+    options?: {
+      headers?: HeadersInit;
+      data?: any;
+    }
+  ): boolean;
+
+  /** Publish a message to all subscribers of a topic */
+  publish(topic: string, data: string | ArrayBufferView | ArrayBuffer, compress?: boolean): number;
 }
 
 // ---------------------------------------------------------------------------

@@ -42,7 +42,7 @@ export interface ServerInfo {
 }
 
 export interface WsEvent {
-  eventType: string
+  eventType: 'open' | 'message' | 'close' | 'error'
   connectionId: string
   text?: string
   binary?: Array<number>
