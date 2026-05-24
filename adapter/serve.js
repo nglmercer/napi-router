@@ -151,37 +151,32 @@ function toWebRequest(data, baseUrl) {
     data.method !== "GET" &&
     data.method !== "HEAD"
   ) {
-    init.body = data.body;
+    init.body = new Uint8Array(data.body);
   }
 
   return new Request(url, init);
 }
 
-function toBodyArray(body) {
-  if (body == null) return undefined;
-  if (typeof body === "string") return Array.from(textEncoder.encode(body));
-  if (body instanceof Uint8Array) return Array.from(body);
-  if (body instanceof ArrayBuffer) return Array.from(new Uint8Array(body));
-  return undefined;
-}
-
-function fromWebResponse(response) {
+function sendResponseFast(raw, requestId, response) {
   const headers = [];
   response.headers.forEach((value, key) => {
     headers.push(key, value);
   });
 
-  const raw = response._rawBody;
-  if (raw !== undefined) {
-    const body = toBodyArray(raw);
-    if (body !== undefined) {
-      return { status: response.status, headers, body };
-    }
+  const rawBody = response._rawBody;
+  if (typeof rawBody === "string") {
+    raw.sendResponseText(requestId, response.status, headers, rawBody);
+    return;
+  }
+  if (rawBody instanceof Uint8Array || rawBody instanceof ArrayBuffer) {
+    const bytes = rawBody instanceof Uint8Array ? rawBody : new Uint8Array(rawBody);
+    raw.sendResponseBuffer(requestId, response.status, headers, Array.from(bytes));
+    return;
   }
 
-  return response.arrayBuffer().then(
-    (buf) => ({ status: response.status, headers, body: new Uint8Array(buf) }),
-    () => ({ status: response.status, headers, body: new Uint8Array(0) }),
+  response.arrayBuffer().then(
+    (buf) => raw.sendResponseBuffer(requestId, response.status, headers, Array.from(new Uint8Array(buf))),
+    () => raw.sendResponseBuffer(requestId, response.status, headers, []),
   );
 }
 
@@ -210,8 +205,10 @@ function makeWsProxy(connectionId, raw) {
 
     send(msg) {
       if (typeof msg === "string") return raw.wsSend(connectionId, msg);
-      if (msg instanceof Uint8Array) return raw.wsSendBinary(connectionId, msg);
-      if (msg instanceof ArrayBuffer) return raw.wsSendBinary(connectionId, new Uint8Array(msg));
+      if (msg instanceof Uint8Array || msg instanceof ArrayBuffer) {
+        const bytes = msg instanceof Uint8Array ? msg : new Uint8Array(msg);
+        return raw.wsSendBinary(connectionId, Array.from(bytes));
+      }
       return raw.wsSendBinary(connectionId, Array.from(msg));
     },
 
@@ -256,7 +253,7 @@ function wireWebSocket(raw, wsHandlers) {
         if (event.text != null) {
           wsHandlers.message?.(ws, event.text);
         } else if (event.binary != null) {
-          wsHandlers.message?.(ws, event.binary);
+          wsHandlers.message?.(ws, new Uint8Array(event.binary));
         }
         break;
 
@@ -341,8 +338,7 @@ export async function serve(options) {
         return;
       }
 
-      const responseData = fromWebResponse(response);
-      raw.sendResponse(requestId, typeof responseData.then === "function" ? await responseData : responseData);
+      sendResponseFast(raw, requestId, response);
     });
   } else {
     raw.onRequest(async ({ request: requestData, requestId }) => {
@@ -363,8 +359,7 @@ export async function serve(options) {
         }
       }
 
-      const responseData = fromWebResponse(response);
-      raw.sendResponse(requestId, typeof responseData.then === "function" ? await responseData : responseData);
+      sendResponseFast(raw, requestId, response);
     });
   }
 

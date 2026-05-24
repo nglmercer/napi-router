@@ -140,6 +140,36 @@ impl HttpServer {
     }
 
     #[napi]
+    pub fn send_response_text(&self, request_id: u32, status: u16, headers: Vec<String>, body: String) {
+        let idx = (request_id as usize) % self.inner.pending.len();
+        if let Some(tx) = self.inner.pending[idx].lock().unwrap().remove(&request_id) {
+            let response = ResponseData {
+                status,
+                headers,
+                body: Some(body.into_bytes()),
+                upgrade: None,
+                connection_id: None,
+            };
+            let _ = tx.send(response);
+        }
+    }
+
+    #[napi]
+    pub fn send_response_buffer(&self, request_id: u32, status: u16, headers: Vec<String>, body: Vec<u8>) {
+        let idx = (request_id as usize) % self.inner.pending.len();
+        if let Some(tx) = self.inner.pending[idx].lock().unwrap().remove(&request_id) {
+            let response = ResponseData {
+                status,
+                headers,
+                body: Some(body),
+                upgrade: None,
+                connection_id: None,
+            };
+            let _ = tx.send(response);
+        }
+    }
+
+    #[napi]
     pub fn pending_count(&self) -> u32 {
         self.inner.pending.iter()
             .map(|s| s.lock().unwrap().len() as u32)

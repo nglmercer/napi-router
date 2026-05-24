@@ -7,6 +7,8 @@ export declare class HttpServer {
   listen(port: number, hostname?: string | undefined | null): Promise<ServerInfo>
   close(closeActiveConnections?: boolean | undefined | null): Promise<void>
   sendResponse(requestId: number, response: ResponseData): void
+  sendResponseText(requestId: number, status: number, headers: Array<string>, body: string): void
+  sendResponseBuffer(requestId: number, status: number, headers: Array<string>, body: Array<number>): void
   pendingCount(): number
   wsSend(connectionId: string, message: string): number
   wsSendBinary(connectionId: string, data: Array<number>): number
