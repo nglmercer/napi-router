@@ -6,7 +6,7 @@ export declare class HttpServer {
   onWsEvent(callback: WsEventTsfn): void
   listen(port: number, hostname?: string | undefined | null): Promise<ServerInfo>
   close(closeActiveConnections?: boolean | undefined | null): Promise<void>
-  sendResponse(requestId: string, response: ResponseData): void
+  sendResponse(requestId: number, response: ResponseData): void
   pendingCount(): number
   wsSend(connectionId: string, message: string): number
   wsSendBinary(connectionId: string, data: Array<number>): number
@@ -22,14 +22,14 @@ export declare class HttpServer {
 
 export interface RequestCall {
   request: RequestData
-  requestId: string
+  requestId: number
 }
 
 export interface RequestData {
   method: string
   url: string
   path: string
-  headers: Record<string, string>
+  headers: Array<Array<string>>
   body?: string
   query: Record<string, string>
   remoteAddr: string
@@ -37,7 +37,7 @@ export interface RequestData {
 
 export interface ResponseData {
   status: number
-  headers: Record<string, string>
+  headers: Array<Array<string>>
   body?: string
   upgrade?: boolean
   connectionId?: string

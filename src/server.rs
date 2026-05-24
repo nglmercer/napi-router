@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -24,7 +25,7 @@ type WsEventTsfn = ThreadsafeFunction<WsEvent, Unknown<'static>, WsEvent, Status
 struct ServerInner {
     on_request: Mutex<Option<Arc<RequestTsfn>>>,
     on_ws_event: Mutex<Option<Arc<WsEventTsfn>>>,
-    pending: Mutex<HashMap<String, oneshot::Sender<ResponseData>>>,
+    pending: Vec<Mutex<HashMap<u32, oneshot::Sender<ResponseData>>>>,
     ws_senders: websocket::WsSenders,
     ws_subscriptions: Mutex<HashMap<String, HashSet<String>>>,
     ws_topics: Mutex<HashMap<String, HashSet<String>>>,
@@ -48,11 +49,12 @@ impl Default for HttpServer {
 impl HttpServer {
     #[napi(constructor)]
     pub fn new() -> Self {
+        const PENDING_SHARDS: usize = 16;
         HttpServer {
             inner: Arc::new(ServerInner {
                 on_request: Mutex::new(None),
                 on_ws_event: Mutex::new(None),
-                pending: Mutex::new(HashMap::new()),
+                pending: (0..PENDING_SHARDS).map(|_| Mutex::new(HashMap::new())).collect(),
                 ws_senders: Arc::new(Mutex::new(HashMap::new())),
                 ws_subscriptions: Mutex::new(HashMap::new()),
                 ws_topics: Mutex::new(HashMap::new()),
@@ -123,20 +125,24 @@ impl HttpServer {
         // 3. Drop callbacks & pending requests to allow the event loop to exit
         *self.inner.on_request.lock().unwrap() = None;
         *self.inner.on_ws_event.lock().unwrap() = None;
-        self.inner.pending.lock().unwrap().clear();
+        for shard in &self.inner.pending {
+            shard.lock().unwrap().clear();
+        }
     }
 
     #[napi]
-    pub fn send_response(&self, request_id: String, response: ResponseData) {
-        let mut pending = self.inner.pending.lock().unwrap();
-        if let Some(tx) = pending.remove(&request_id) {
+    pub fn send_response(&self, request_id: u32, response: ResponseData) {
+        let idx = (request_id as usize) % self.inner.pending.len();
+        if let Some(tx) = self.inner.pending[idx].lock().unwrap().remove(&request_id) {
             let _ = tx.send(response);
         }
     }
 
     #[napi]
     pub fn pending_count(&self) -> u32 {
-        self.inner.pending.lock().unwrap().len() as u32
+        self.inner.pending.iter()
+            .map(|s| s.lock().unwrap().len() as u32)
+            .sum()
     }
 
     #[napi]
@@ -313,11 +319,13 @@ async fn handle_connection(
         handle_request(req, state.clone(), remote_addr.clone())
     });
 
-    if let Err(e) =
-        hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
-            .serve_connection_with_upgrades(io, svc)
-            .await
-    {
+    let mut builder = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
+    builder
+        .http1()
+        .max_buf_size(65536)
+        .pipeline_flush(true)
+        .keep_alive(true);
+    if let Err(e) = builder.serve_connection_with_upgrades(io, svc).await {
         eprintln!("connection error: {}", e);
     }
 }
@@ -344,14 +352,14 @@ async fn handle_request(
                     .collect()
             })
             .unwrap_or_default();
-        let headers: HashMap<String, String> = req_ref
+        let headers: Vec<Vec<String>> = req_ref
             .headers()
             .iter()
             .map(|(k, v)| {
-                (
+                vec![
                     k.as_str().to_lowercase(),
                     v.to_str().unwrap_or("").to_string(),
-                )
+                ]
             })
             .collect();
         (method, url, path, query, headers, None)
@@ -387,20 +395,20 @@ async fn handle_request(
                     .collect()
             })
             .unwrap_or_default();
-        let headers: HashMap<String, String> = parts
+        let headers: Vec<Vec<String>> = parts
             .headers
             .iter()
             .map(|(k, v)| {
-                (
+                vec![
                     k.as_str().to_lowercase(),
                     v.to_str().unwrap_or("").to_string(),
-                )
+                ]
             })
             .collect();
         (method_str, url, path, query, headers, body_str)
     };
 
-    let request_id = format!("req_{}", generate_id());
+    let request_id = next_request_id();
 
     let remote_addr_clone = remote_addr.clone();
     let request_data = RequestData {
@@ -415,8 +423,8 @@ async fn handle_request(
 
     let (tx, rx) = oneshot::channel::<ResponseData>();
     {
-        let mut pending = state.pending.lock().unwrap();
-        pending.insert(request_id.clone(), tx);
+        let idx = (request_id as usize) % state.pending.len();
+        state.pending[idx].lock().unwrap().insert(request_id, tx);
     }
 
     let tsfn = {
@@ -427,13 +435,14 @@ async fn handle_request(
     if let Some(tsfn) = tsfn {
         let call = RequestCall {
             request: request_data,
-            request_id: request_id.clone(),
+            request_id,
         };
         if tsfn.call(call, ThreadsafeFunctionCallMode::NonBlocking) != Status::Ok {
             eprintln!("on_request call failed");
         }
     } else {
-        state.pending.lock().unwrap().remove(&request_id);
+        let idx = (request_id as usize) % state.pending.len();
+        state.pending[idx].lock().unwrap().remove(&request_id);
         return Ok(Response::builder()
             .status(StatusCode::INTERNAL_SERVER_ERROR)
             .body(Full::new(Bytes::from("no fetch handler registered")))
@@ -467,8 +476,8 @@ async fn handle_request(
         StatusCode::from_u16(response_data.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
     );
 
-    for (k, v) in &response_data.headers {
-        builder = builder.header(k.as_str(), v.as_str());
+    for pair in &response_data.headers {
+        builder = builder.header(pair[0].as_str(), pair[1].as_str());
     }
 
     let body = response_data.body.unwrap_or_default();
@@ -480,7 +489,7 @@ async fn handle_ws_upgrade(
     state: Arc<ServerInner>,
     _remote_addr: String,
     connection_id: String,
-    extra_headers: HashMap<String, String>,
+    extra_headers: Vec<Vec<String>>,
 ) -> std::result::Result<Response<Full<Bytes>>, hyper::Error> {
     let ws_key = req
         .headers()
@@ -490,10 +499,10 @@ async fn handle_ws_upgrade(
         .to_string();
 
     let mut upgrade_response = websocket::build_ws_upgrade_response(&ws_key);
-    for (k, v) in extra_headers {
+    for pair in extra_headers {
         upgrade_response.headers_mut().append(
-            hyper::header::HeaderName::from_bytes(k.as_bytes()).unwrap(),
-            hyper::header::HeaderValue::from_str(&v).unwrap(),
+            hyper::header::HeaderName::from_bytes(pair[0].as_bytes()).unwrap(),
+            hyper::header::HeaderValue::from_str(&pair[1]).unwrap(),
         );
     }
 
@@ -557,11 +566,7 @@ async fn handle_ws_upgrade(
     Ok(upgrade_response)
 }
 
-fn generate_id() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    (nanos & 0xFFFF_FFFF_FFFF_FFFF) as u64
+fn next_request_id() -> u32 {
+    static COUNTER: AtomicU32 = AtomicU32::new(1);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
 }

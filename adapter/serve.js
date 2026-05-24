@@ -163,8 +163,8 @@ function toWebRequest(data, baseUrl) {
   const h = data.headers;
   const headers = new Headers();
   if (h) {
-    for (const k in h) {
-      headers.set(k, h[k]);
+    for (let i = 0; i < h.length; i++) {
+      headers.set(h[i][0], h[i][1]);
     }
   }
 
@@ -190,9 +190,9 @@ function toWebRequest(data, baseUrl) {
 // ---------------------------------------------------------------------------
 
 function fromWebResponse(response) {
-  const headers = {};
+  const headers = [];
   response.headers.forEach((value, key) => {
-    headers[key] = value;
+    headers.push([key, value]);
   });
 
   const raw = response._rawBody;
@@ -362,7 +362,7 @@ export async function serve(options) {
     if (reqCtx.upgraded && reqCtx.connectionId) {
       raw.sendResponse(requestId, {
         status: 101,
-        headers: {},
+        headers: [],
         body: "",
         upgrade: true,
         connectionId: reqCtx.connectionId,
@@ -373,10 +373,10 @@ export async function serve(options) {
     // Auto-detect WebSocket upgrade fallback: if the request has Upgrade: websocket,
     // and the user did NOT call upgrade() manually, but websocket option is provided,
     // perform the upgrade automatically.
-    const headers = requestData.headers ?? {};
+    const reqHeaders = requestData.headers ?? [];
     const isUpgrade =
-      headers["upgrade"]?.toLowerCase() === "websocket" &&
-      headers["connection"]?.toLowerCase().includes("upgrade");
+      reqHeaders.some(([k, v]) => k === "upgrade" && v.toLowerCase() === "websocket") &&
+      reqHeaders.some(([k, v]) => k === "connection" && v.toLowerCase().includes("upgrade"));
 
     if (isUpgrade && websocket) {
       const connectionId = uniqueId("ws");
@@ -390,7 +390,7 @@ export async function serve(options) {
 
       raw.sendResponse(requestId, {
         status: 101,
-        headers: {},
+        headers: [],
         body: "",
         upgrade: true,
         connectionId,
