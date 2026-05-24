@@ -123,7 +123,6 @@ Cargo.lock
 # Additional
 *.map
 *.min.*
-*.d.ts
 # Logs
 logs
 *.log
@@ -169,7 +168,6 @@ jspm_packages/
 
 # Optional eslint cache
 .eslintcache
-*.js
 
 # Bun Stuff
 .bun-cache/

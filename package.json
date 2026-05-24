@@ -24,24 +24,29 @@
   "types": "index.d.ts",
   "exports": {
     ".": {
-      "import": "./index.mjs",
       "require": "./index.js",
-      "default": "./index.mjs"
+      "default": "./index.js"
+    },
+    "./adapter": {
+      "import": "./adapter/serve.js",
+      "default": "./adapter/serve.js"
+    },
+    "./adapter/serve": {
+      "import": "./adapter/serve.js",
+      "default": "./adapter/serve.js"
     }
   },
   "files": [
     "index.js",
     "index.d.ts",
-    "index.mjs",
     "*.node",
-    "lib/",
     "adapter/",
     "README.md",
     "LICENSE"
   ],
-"scripts": {
-    "build": "napi build --platform --release && node scripts/postbuild.js",
-    "build:debug": "napi build --platform && node scripts/postbuild.js",
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
     "clean": "napi clean && cargo clean",
     "test": "bun test",
     "dev": "node --watch examples/dev.ts",

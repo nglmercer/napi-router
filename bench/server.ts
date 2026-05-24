@@ -1,63 +1,89 @@
-import { serve } from '../index.js';
+/**
+ * bench/server.ts
+ *
+ * Single-server detailed benchmark for napi-router.
+ * Tests GET, POST, JSON endpoints with sequential and concurrent loads.
+ *
+ * Run:  bun bench/server.ts
+ */
 
-const port = 9999;
-const iterations = 5000;
+import { serve } from '../adapter/serve.js';
+import type { Server } from '../adapter/serve.js';
 
-async function benchmark() {
-  const server = await serve({
-    port,
+const PORT       = 9999;
+const WARMUP     = 500;
+const GET_N      = 3_000;
+const POST_N     = 1_500;
+const JSON_N     = 1_500;
+const CONCURRENT = 50;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function rps(n: number, ms: number): string {
+  return ((n / ms) * 1_000).toFixed(0);
+}
+
+async function measure(label: string, n: number, fn: () => Promise<void>): Promise<void> {
+  const t0 = performance.now();
+  let done = 0;
+  while (done < n) {
+    const batch = Math.min(CONCURRENT, n - done);
+    await Promise.all(Array.from({ length: batch }, fn));
+    done += batch;
+  }
+  const elapsed = performance.now() - t0;
+  console.log(`  ${label.padEnd(16)} ${n.toString().padStart(5)} req  →  ${rps(n, elapsed).padStart(7)} req/s  (${elapsed.toFixed(1)} ms)`);
+}
+
+// ---------------------------------------------------------------------------
+// Main benchmark
+// ---------------------------------------------------------------------------
+
+async function benchmark(): Promise<void> {
+  const server: Server = await serve({
+    port: PORT,
     hostname: '0.0.0.0',
     async fetch(req) {
       const url = new URL(req.url);
+
       if (url.pathname === '/json') {
         return Response.json({ message: 'hello', timestamp: Date.now() });
       }
+
       if (url.pathname === '/echo' && req.method === 'POST') {
-        return new Response('echo: ' + (await req.text()));
+        const body = await req.text();
+        return new Response(`echo: ${body}`, { headers: { 'content-type': 'text/plain' } });
       }
-      return new Response('Hello World');
+
+      return new Response('Hello World', { headers: { 'content-type': 'text/plain' } });
     },
   });
 
-  console.log(`Benchmark server running on port ${port}`);
-  console.log(`Running ${iterations} requests...\n`);
+  const base = `http://localhost:${PORT}`;
+  console.log(`\nnapi-router listening on ${server.url}`);
+  console.log(`concurrency: ${CONCURRENT}\n`);
 
   // Warmup
-  for (let i = 0; i < 500; i++) {
-    await fetch(`http://localhost:${port}/`);
-  }
+  await Promise.all(Array.from({ length: WARMUP }, () => fetch(`${base}/`).catch(() => {})));
 
-  // Benchmark GET
-  const getStart = performance.now();
-  for (let i = 0; i < 2500; i++) {
-    await fetch(`http://localhost:${port}/`);
-  }
-  const getEnd = performance.now();
+  console.log('='.repeat(60));
+  console.log('  napi-router Benchmark Results');
+  console.log('='.repeat(60));
 
-  // Benchmark POST
-  const postStart = performance.now();
-  for (let i = 0; i < 1250; i++) {
-    await fetch(`http://localhost:${port}/echo`, { method: 'POST', body: 'test' });
-  }
-  const postEnd = performance.now();
+  await measure('GET  /', GET_N,  () => fetch(`${base}/`));
+  await measure('POST /echo', POST_N, () =>
+    fetch(`${base}/echo`, { method: 'POST', body: 'benchmark-payload' }),
+  );
+  await measure('GET  /json', JSON_N, () => fetch(`${base}/json`));
 
-  // Benchmark JSON
-  const jsonStart = performance.now();
-  for (let i = 0; i < 1250; i++) {
-    await fetch(`http://localhost:${port}/json`);
-  }
-  const jsonEnd = performance.now();
-
-  const getTotal = getEnd - getStart;
-  const postTotal = postEnd - postStart;
-  const jsonTotal = jsonEnd - jsonStart;
-
-  console.log('=== napi-router Benchmark Results ===');
-  console.log(`GET requests:    ${(2500 / getTotal * 1000).toFixed(2)} rps (${getTotal.toFixed(2)}ms total)`);
-  console.log(`POST requests:   ${(1250 / postTotal * 1000).toFixed(2)} rps (${postTotal.toFixed(2)}ms total)`);
-  console.log(`JSON requests:   ${(1250 / jsonTotal * 1000).toFixed(2)} rps (${jsonTotal.toFixed(2)}ms total)`);
+  console.log('='.repeat(60));
 
   server.stop();
 }
 
-benchmark().catch(console.error);
+benchmark().catch((err) => {
+  console.error('Benchmark failed:', err);
+  process.exit(1);
+});

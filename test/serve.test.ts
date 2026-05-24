@@ -1,6 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import { strict as assert } from "node:assert";
-import { serve, tryServe, Server } from "../index.js";
+import { serve, tryServe, Server } from "../adapter/serve.js";
 
 let server!: Server;
 const port = 9876;

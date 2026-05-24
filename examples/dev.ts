@@ -1,4 +1,4 @@
-import { serve } from "../index.js";
+import { serve } from "../adapter/serve.js";
 
 const server = await serve({
   port: 3000,

@@ -1,77 +1,106 @@
-// Benchmark comparing Bun's native server vs napi-router
-const iterations = 3000;
+/**
+ * bench/compare.ts
+ *
+ * Compares Bun's native server vs napi-router (via the adapter) side-by-side.
+ * Imports: from '../adapter/serve.js' — NOT from '../index.js' (raw NAPI binding).
+ *
+ * Run:  bun bench/compare.ts
+ */
 
-function runBenchmark(name: string, port: number, fetchUrl: string) {
-  return new Promise<void>((resolve) => {
-    console.log(`\n=== ${name} ===`);
-    
-    // Warmup
-    Promise.all(Array.from({ length: 100 }, () => fetch(fetchUrl))).then(() => {
-      const start = performance.now();
-      let completed = 0;
-      
-      const batch = () => {
-        const batchSize = 100;
-        const promises = Array.from({ length: batchSize }, () => fetch(fetchUrl));
-        
-        Promise.all(promises).then(() => {
-          completed += batchSize;
-          if (completed < iterations) {
-            batch();
-          } else {
-            const end = performance.now();
-            const total = end - start;
-            const rps = (iterations / total) * 1000;
-            console.log(`${iterations} requests in ${total.toFixed(2)}ms = ${rps.toFixed(0)} rps`);
-            resolve();
-          }
-        });
-      };
-      
-      batch();
-    });
-  });
+import type { Server } from "../adapter/serve.js";
+
+const WARMUP = 200; // requests discarded before measurement
+const ITERATIONS = 3_000; // total measured requests
+const CONCURRENCY = 50; // parallel requests per batch
+
+// ---------------------------------------------------------------------------
+// Benchmarking harness
+// ---------------------------------------------------------------------------
+
+async function runBenchmark(name: string, url: string): Promise<void> {
+  console.log(`\n=== ${name} ===`);
+
+  // Warmup
+  await Promise.all(
+    Array.from({ length: WARMUP }, () => fetch(url).catch(() => {})),
+  );
+
+  const start = performance.now();
+  let done = 0;
+
+  while (done < ITERATIONS) {
+    const batchSize = Math.min(CONCURRENCY, ITERATIONS - done);
+    await Promise.all(Array.from({ length: batchSize }, () => fetch(url)));
+    done += batchSize;
+  }
+
+  const elapsed = performance.now() - start;
+  const rps = (ITERATIONS / elapsed) * 1_000;
+  console.log(
+    `  ${ITERATIONS} requests in ${elapsed.toFixed(1)} ms  →  ${rps.toFixed(0)} req/s`,
+  );
 }
 
-async function runBunNativeBenchmark() {
+// ---------------------------------------------------------------------------
+// Bun native server
+// ---------------------------------------------------------------------------
+
+async function runBunBenchmark(): Promise<void> {
   const port = 9998;
-  const ac = new AbortController();
-  
-  // @ts-ignore - Bun-specific
-  const server = Bun.serve({
-    port,
-    fetch() {
-      return new Response('Hello World');
-    },
-  });
 
-  await runBenchmark('Bun Native Server', port, `http://localhost:${port}/`);
-  server.stop();
+  // @ts-ignore — Bun-specific global
+  if (typeof Bun === "undefined") {
+    console.log("\n=== Bun Native Server ===");
+    console.log("  [skipped — not running under Bun]");
+    return;
+  }
+
+  // @ts-ignore
+  const server = Bun.serve({ port, fetch: () => new Response("Hello World") });
+  await runBenchmark("Bun Native Server", `http://localhost:${port}/`);
+  server.stop(true);
 }
 
-async function runNapiRouterBenchmark() {
-  const { serve } = await import('../index.js');
+// ---------------------------------------------------------------------------
+// napi-router via adapter
+// ---------------------------------------------------------------------------
+
+async function runNapiRouterBenchmark(): Promise<void> {
+  const { serve } = await import("../adapter/serve.js");
   const port = 9999;
-  
-  const server = await serve({
+
+  const server: Server = await serve({
     port,
-    hostname: '0.0.0.0',
-    async fetch() {
-      return new Response('Hello World');
+    hostname: "0.0.0.0",
+    fetch() {
+      return new Response("Hello World");
     },
   });
 
-  await runBenchmark('napi-router', port, `http://localhost:${port}/`);
+  await runBenchmark("napi-router (adapter)", `http://localhost:${port}/`);
   server.stop();
 }
 
-async function main() {
-  console.log('Starting benchmarks...');
-  
-  await runBunNativeBenchmark();
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+async function main(): Promise<void> {
+  console.log("=".repeat(50));
+  console.log("  napi-router benchmark");
+  console.log(`  ${ITERATIONS} requests  •  concurrency ${CONCURRENCY}`);
+  console.log("=".repeat(50));
+
+  await runBunBenchmark();
   await runNapiRouterBenchmark();
-  
-  console.log('\nBenchmark complete!');
+
+  console.log("=".repeat(50));
+  console.log("  Done!");
+  console.log("=".repeat(50));
+  process.exit(0);
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error("Benchmark failed:", err);
+  process.exit(1);
+});
