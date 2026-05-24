@@ -5,7 +5,7 @@ export declare class HttpServer {
   onRequest(callback: RequestTsfn): void
   onWsEvent(callback: WsEventTsfn): void
   listen(port: number, hostname?: string | undefined | null): Promise<ServerInfo>
-  close(): Promise<void>
+  close(closeActiveConnections?: boolean | undefined | null): Promise<void>
   sendResponse(requestId: string, response: ResponseData): void
   pendingCount(): number
   wsSend(connectionId: string, message: string): number

@@ -10,16 +10,16 @@
 // ---------------------------------------------------------------------------
 // Dynamic import of the native binding (works in ESM and CJS)
 // ---------------------------------------------------------------------------
-import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const _require = createRequire(import.meta.url);
 
 /** @type {{ HttpServer: typeof import('../index.js').HttpServer }} */
-const native = _require(resolve(__dirname, '../index.js'));
+const native = _require(resolve(__dirname, "../index.js"));
 const { HttpServer } = native;
 
 // ---------------------------------------------------------------------------
@@ -48,28 +48,38 @@ class ServerHandle {
   }
 
   /** Bound port (may differ from requested when port=0 was used) */
-  get port() { return this.#port; }
+  get port() {
+    return this.#port;
+  }
 
   /** Bound hostname */
-  get hostname() { return this.#hostname; }
+  get hostname() {
+    return this.#hostname;
+  }
 
   /** URL string for the server root */
-  get url() { return `http://${this.#hostname}:${this.#port}/`; }
+  get url() {
+    return `http://${this.#hostname}:${this.#port}/`;
+  }
 
   /** Number of requests currently waiting for a fetch-handler response */
-  get pendingRequests() { return this.#raw.pendingCount(); }
+  get pendingRequests() {
+    return this.#raw.pendingCount();
+  }
 
   /** Number of open WebSocket connections */
-  get pendingWebSockets() { return this.#raw.wsConnectionCount(); }
+  get pendingWebSockets() {
+    return this.#raw.wsConnectionCount();
+  }
 
   /**
    * Stop the server. Safe to call multiple times.
    * @param {boolean} [closeActiveConnections=false]
    */
-  stop(closeActiveConnections = false) {
+  async stop(closeActiveConnections = false) {
     if (this.#stopped) return;
     this.#stopped = true;
-    this.#raw.close().catch(() => {});
+    await this.#raw.close(closeActiveConnections).catch(() => {});
   }
 
   // ── WebSocket helpers (mirrors Bun's ServerWebSocket API surface) ────────
@@ -106,7 +116,9 @@ class ServerHandle {
   }
 
   // Allow instanceof checks against a named class
-  get [Symbol.toStringTag]() { return 'ServerHandle'; }
+  get [Symbol.toStringTag]() {
+    return "ServerHandle";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +132,7 @@ class ServerHandle {
  */
 function toWebRequest(data, baseUrl) {
   // The URL from hyper may be a bare path; prefix the origin so it is valid.
-  const url = data.url.startsWith('http') ? data.url : `${baseUrl}${data.url}`;
+  const url = data.url.startsWith("http") ? data.url : `${baseUrl}${data.url}`;
 
   const headers = new Headers();
   for (const [k, v] of Object.entries(data.headers ?? {})) {
@@ -132,7 +144,12 @@ function toWebRequest(data, baseUrl) {
     headers,
   };
 
-  if (data.body != null && data.body.length > 0 && data.method !== 'GET' && data.method !== 'HEAD') {
+  if (
+    data.body != null &&
+    data.body.length > 0 &&
+    data.method !== "GET" &&
+    data.method !== "HEAD"
+  ) {
     init.body = data.body;
   }
 
@@ -157,7 +174,7 @@ async function fromWebResponse(response) {
   try {
     body = await response.text();
   } catch {
-    body = '';
+    body = "";
   }
 
   return {
@@ -179,15 +196,19 @@ async function fromWebResponse(response) {
  */
 function makeWsProxy(connectionId, raw) {
   return {
-    get id() { return connectionId; },
+    get id() {
+      return connectionId;
+    },
     send(msg) {
-      if (typeof msg === 'string') return raw.wsSend(connectionId, msg);
+      if (typeof msg === "string") return raw.wsSend(connectionId, msg);
       return raw.wsSendBinary(connectionId, Array.from(msg));
     },
     close(code, reason) {
       return raw.wsClose(connectionId);
     },
-    get readyState() { return 1; /* OPEN */ },
+    get readyState() {
+      return 1; /* OPEN */
+    },
   };
 }
 
@@ -204,24 +225,24 @@ function wireWebSocket(raw, wsHandlers) {
     const ws = makeWsProxy(event.connectionId, raw);
 
     switch (event.eventType) {
-      case 'open':
+      case "open":
         wsHandlers.open?.(ws);
         break;
-      case 'message':
+      case "message":
         if (event.text != null) {
           wsHandlers.message?.(ws, event.text);
         } else if (event.binary != null) {
           wsHandlers.message?.(ws, new Uint8Array(event.binary));
         }
         break;
-      case 'close':
-        wsHandlers.close?.(ws, event.code ?? 1000, event.reason ?? '');
+      case "close":
+        wsHandlers.close?.(ws, event.code ?? 1000, event.reason ?? "");
         break;
-      case 'error':
-        wsHandlers.error?.(ws, new Error(event.error ?? 'WebSocket error'));
+      case "error":
+        wsHandlers.error?.(ws, new Error(event.error ?? "WebSocket error"));
         break;
-      case 'disconnect':
-        wsHandlers.close?.(ws, event.code ?? 1000, event.reason ?? '');
+      case "disconnect":
+        wsHandlers.close?.(ws, event.code ?? 1000, event.reason ?? "");
         break;
     }
   });
@@ -253,14 +274,14 @@ function wireWebSocket(raw, wsHandlers) {
 export async function serve(options) {
   const {
     port = 3000,
-    hostname = '0.0.0.0',
+    hostname = "0.0.0.0",
     fetch: fetchHandler,
     websocket,
     error: errorHandler,
   } = options;
 
-  if (typeof fetchHandler !== 'function') {
-    throw new TypeError('serve(): options.fetch must be a function');
+  if (typeof fetchHandler !== "function") {
+    throw new TypeError("serve(): options.fetch must be a function");
   }
 
   const raw = new HttpServer();
@@ -278,18 +299,21 @@ export async function serve(options) {
     try {
       response = await fetchHandler(webRequest, handle);
       if (!(response instanceof Response)) {
-        response = new Response('Internal Server Error: fetch handler must return a Response', { status: 500 });
+        response = new Response(
+          "Internal Server Error: fetch handler must return a Response",
+          { status: 500 },
+        );
       }
     } catch (err) {
-      if (typeof errorHandler === 'function') {
+      if (typeof errorHandler === "function") {
         try {
           response = await errorHandler(err);
         } catch {
-          response = new Response('Internal Server Error', { status: 500 });
+          response = new Response("Internal Server Error", { status: 500 });
         }
       } else {
-        console.error('[napi-router] Unhandled error in fetch handler:', err);
-        response = new Response('Internal Server Error', { status: 500 });
+        console.error("[napi-router] Unhandled error in fetch handler:", err);
+        response = new Response("Internal Server Error", { status: 500 });
       }
     }
 

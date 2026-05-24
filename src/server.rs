@@ -12,6 +12,7 @@ use napi::{Status, Unknown};
 use napi_derive::napi;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
+use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::types::*;
 use crate::websocket;
@@ -28,6 +29,8 @@ struct ServerInner {
     ws_subscriptions: Mutex<HashMap<String, HashSet<String>>>,
     ws_topics: Mutex<HashMap<String, HashSet<String>>>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    accept_task: Mutex<Option<JoinHandle<()>>>,
+    conn_abort_handles: Mutex<Vec<AbortHandle>>,
 }
 
 #[napi]
@@ -54,6 +57,8 @@ impl HttpServer {
                 ws_subscriptions: Mutex::new(HashMap::new()),
                 ws_topics: Mutex::new(HashMap::new()),
                 shutdown_tx: Mutex::new(None),
+                accept_task: Mutex::new(None),
+                conn_abort_handles: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -84,9 +89,10 @@ impl HttpServer {
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         *self.inner.shutdown_tx.lock().unwrap() = Some(shutdown_tx);
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             accept_loop(listener, state, shutdown_rx).await;
         });
+        *self.inner.accept_task.lock().unwrap() = Some(handle);
 
         Ok(ServerInfo {
             port: local_addr.port(),
@@ -95,10 +101,29 @@ impl HttpServer {
     }
 
     #[napi]
-    pub async fn close(&self) {
+    pub async fn close(&self, close_active_connections: Option<bool>) {
+        // 1. Stop accepting new connections
         if let Some(tx) = self.inner.shutdown_tx.lock().unwrap().take() {
             let _ = tx.send(());
         }
+        let task = self.inner.accept_task.lock().unwrap().take();
+        if let Some(h) = task {
+            h.abort();
+            let _ = h.await;
+        }
+
+        // 2. Optionally close active connections
+        if close_active_connections.unwrap_or(false) {
+            let handles = self.inner.conn_abort_handles.lock().unwrap().drain(..).collect::<Vec<_>>();
+            for h in handles {
+                h.abort();
+            }
+        }
+
+        // 3. Drop callbacks & pending requests to allow the event loop to exit
+        *self.inner.on_request.lock().unwrap() = None;
+        *self.inner.on_ws_event.lock().unwrap() = None;
+        self.inner.pending.lock().unwrap().clear();
     }
 
     #[napi]
@@ -258,11 +283,12 @@ async fn accept_loop(
             result = listener.accept() => {
                 match result {
                     Ok((stream, peer)) => {
-                        let state = state.clone();
                         let remote = peer.to_string();
-                        tokio::spawn(async move {
-                            handle_connection(stream, state, remote).await;
+                        let state_for_spawn = state.clone();
+                        let handle = tokio::spawn(async move {
+                            handle_connection(stream, state_for_spawn, remote).await;
                         });
+                        state.conn_abort_handles.lock().unwrap().push(handle.abort_handle());
                     }
                     Err(e) => {
                         eprintln!("accept error: {}", e);
