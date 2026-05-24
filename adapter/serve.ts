@@ -1,19 +1,4 @@
-import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
-
-// ---------------------------------------------------------------------------
-// Native module bootstrap
-// ---------------------------------------------------------------------------
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const _require = createRequire(import.meta.url);
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const native: any = _require(resolve(__dirname, "../index.js"));
-const { HttpServer } = native;
-export type { HttpServer };
+import { HttpServer } from "../index.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -50,9 +35,16 @@ export interface WebSocketHandlers {
   /** Called when a new WebSocket connection is established */
   open?(ws: ServerWebSocket): void | Promise<void>;
   /** Called when a message is received */
-  message?(ws: ServerWebSocket, message: string | Uint8Array): void | Promise<void>;
+  message?(
+    ws: ServerWebSocket,
+    message: string | Uint8Array,
+  ): void | Promise<void>;
   /** Called when the connection closes */
-  close?(ws: ServerWebSocket, code: number, reason: string): void | Promise<void>;
+  close?(
+    ws: ServerWebSocket,
+    code: number,
+    reason: string,
+  ): void | Promise<void>;
   /** Called on a WebSocket error */
   error?(ws: ServerWebSocket, error: Error): void | Promise<void>;
 
@@ -72,7 +64,10 @@ export interface ServeOptions {
    * May return `undefined` if `server.upgrade()` was called to handle a
    * WebSocket upgrade.
    */
-  fetch(request: Request, server: Server): Response | Promise<Response> | undefined;
+  fetch(
+    request: Request,
+    server: Server,
+  ): Response | Promise<Response> | undefined;
   /**
    * WebSocket event handlers. Providing this object enables WebSocket support.
    */
@@ -108,7 +103,10 @@ class FastResponse extends OrigResponse {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   static override json(data: any, init?: ResponseInit): FastResponse {
     const body = JSON.stringify(data);
-    const headers = { ...(init?.headers ?? {}), "content-type": "application/json" };
+    const headers = {
+      ...(init?.headers ?? {}),
+      "content-type": "application/json",
+    };
     const resp = Reflect.construct(
       OrigResponse,
       [body, { ...init, headers }],
@@ -129,7 +127,12 @@ globalThis.Response = FastResponse as unknown as typeof Response;
 
 const requestContexts = new WeakMap<
   Request,
-  { requestId: unknown; upgraded: boolean; connectionId: string | null; remoteAddr?: string }
+  {
+    requestId: unknown;
+    upgraded: boolean;
+    connectionId: string | null;
+    remoteAddr?: string;
+  }
 >();
 
 const connectionMetas = new Map<
@@ -148,13 +151,13 @@ function uniqueId(prefix = "c"): string {
 
 export class Server {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  #raw: any;
+  #raw: HttpServer;
   #port: number;
   #hostname: string;
   #stopped = false;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  constructor(raw: any, port: number, hostname: string) {
+  constructor(raw: HttpServer, port: number, hostname: string) {
     this.#raw = raw;
     this.#port = port;
     this.#hostname = hostname;
@@ -196,7 +199,10 @@ export class Server {
    * Upgrade the request to a WebSocket connection.
    * Call inside `fetch` when you detect an upgrade request.
    */
-  upgrade(req: Request, options: { headers?: HeadersInit; data?: unknown } = {}): boolean {
+  upgrade(
+    req: Request,
+    options: { headers?: HeadersInit; data?: unknown } = {},
+  ): boolean {
     const ctx = requestContexts.get(req);
     if (!ctx || ctx.upgraded) return false;
 
@@ -213,9 +219,15 @@ export class Server {
   }
 
   /** Publish a message to all subscribers of a topic */
-  publish(topic: string, data: string | ArrayBufferView | ArrayBuffer, _compress?: boolean): number {
+  publish(
+    topic: string,
+    data: string | ArrayBufferView | ArrayBuffer,
+    _compress?: boolean,
+  ): number {
     const message =
-      typeof data === "string" ? data : new TextDecoder().decode(data as ArrayBufferView);
+      typeof data === "string"
+        ? data
+        : new TextDecoder().decode(data as ArrayBufferView);
     return this.#raw.serverPublish(topic, message) as number;
   }
 
@@ -225,7 +237,10 @@ export class Server {
   }
 
   /** Send binary data to a specific WebSocket connection */
-  sendBinaryToWs(connectionId: string, data: number[] | Uint8Array | ArrayBuffer): void {
+  sendBinaryToWs(
+    connectionId: string,
+    data: number[] | Uint8Array | ArrayBuffer,
+  ): void {
     if (data instanceof Uint8Array) {
       this.#raw.wsSendBinary(connectionId, data);
     } else if (data instanceof ArrayBuffer) {
@@ -260,8 +275,12 @@ interface RawRequestData {
   path: string;
   method: string;
   headers: string[];
-  /** body arrives as a plain number[] from NAPI-RS, not a Uint8Array */
-  body?: number[] | null;
+  /**
+   * With `Buffer` on the Rust side, NAPI-RS delivers body as a `Uint8Array`
+   * (zero-copy external buffer).  A `number[]` path is kept as a safety net
+   * for any legacy / compatibility scenario.
+   */
+  body?: Uint8Array | number[] | null;
   remoteAddr: string;
   requestId: number;
 }
@@ -280,20 +299,28 @@ function toWebRequest(data: RawRequestData, baseUrl: string): Request {
     headers: headersObj,
   };
 
-  if (
-    data.body != null &&
-    data.body.length > 0 &&
-    data.method !== "GET" &&
-    data.method !== "HEAD"
-  ) {
-    init.body = new Uint8Array(data.body) as BodyInit;
+  if (data.body != null && data.method !== "GET" && data.method !== "HEAD") {
+    // Uint8Array arrives zero-copy from the Rust Buffer; number[] is a legacy fallback.
+    const bodyBytes =
+      data.body instanceof Uint8Array
+        ? data.body
+        : data.body.length > 0
+          ? new Uint8Array(data.body)
+          : null;
+    if (bodyBytes && bodyBytes.length > 0) {
+      init.body = bodyBytes as BodyInit;
+    }
   }
 
   return new Request(url, init);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function sendResponseFast(raw: any, requestId: unknown, response: Response & { _rawBody?: string | Uint8Array | ArrayBuffer }): void {
+function sendResponseFast(
+  raw: any,
+  requestId: unknown,
+  response: Response & { _rawBody?: string | Uint8Array | ArrayBuffer },
+): void {
   const headers: string[] = [];
   response.headers.forEach((value, key) => {
     headers.push(key, value);
@@ -304,16 +331,36 @@ function sendResponseFast(raw: any, requestId: unknown, response: Response & { _
     raw.sendResponseText(requestId, response.status, headers, rawBody);
     return;
   }
-  if (rawBody instanceof Uint8Array || rawBody instanceof ArrayBuffer) {
-    const bytes = rawBody instanceof Uint8Array ? rawBody : new Uint8Array(rawBody);
-    raw.sendResponseBuffer(requestId, response.status, headers, Array.from(bytes));
+  if (rawBody instanceof Uint8Array) {
+    // Pass the Uint8Array directly — Rust side accepts Buffer | Vec<u8>.
+    raw.sendResponseBuffer(requestId, response.status, headers, rawBody);
+    return;
+  }
+  if (rawBody instanceof ArrayBuffer) {
+    raw.sendResponseBuffer(
+      requestId,
+      response.status,
+      headers,
+      new Uint8Array(rawBody),
+    );
     return;
   }
 
   response.arrayBuffer().then(
     (buf) =>
-      raw.sendResponseBuffer(requestId, response.status, headers, Array.from(new Uint8Array(buf))),
-    () => raw.sendResponseBuffer(requestId, response.status, headers, []),
+      raw.sendResponseBuffer(
+        requestId,
+        response.status,
+        headers,
+        new Uint8Array(buf),
+      ),
+    () =>
+      raw.sendResponseBuffer(
+        requestId,
+        response.status,
+        headers,
+        new Uint8Array(0),
+      ),
   );
 }
 
@@ -340,8 +387,10 @@ function makeWsProxy(connectionId: string, raw: any): ServerWebSocket {
     },
 
     send(msg: string | Uint8Array | ArrayBuffer): number {
-      if (typeof msg === "string") return raw.wsSend(connectionId, msg) as number;
-      const bytes = msg instanceof Uint8Array ? msg : new Uint8Array(msg as ArrayBuffer);
+      if (typeof msg === "string")
+        return raw.wsSend(connectionId, msg) as number;
+      const bytes =
+        msg instanceof Uint8Array ? msg : new Uint8Array(msg as ArrayBuffer);
       return raw.wsSendBinary(connectionId, Array.from(bytes)) as number;
     },
 
@@ -368,53 +417,58 @@ function makeWsProxy(connectionId: string, raw: any): ServerWebSocket {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function wireWebSocket(raw: any, wsHandlers: WebSocketHandlers | undefined): void {
+function wireWebSocket(
+  raw: any,
+  wsHandlers: WebSocketHandlers | undefined,
+): void {
   if (!wsHandlers) return;
 
-  raw.onWsEvent((event: {
-    connectionId: string;
-    eventType: "open" | "message" | "close" | "error" | "disconnect";
-    remoteAddr?: string;
-    text?: string;
-    binary?: number[];
-    code?: number;
-    reason?: string;
-    error?: string;
-  }) => {
-    const ws = makeWsProxy(event.connectionId, raw);
+  raw.onWsEvent(
+    (event: {
+      connectionId: string;
+      eventType: "open" | "message" | "close" | "error" | "disconnect";
+      remoteAddr?: string;
+      text?: string;
+      binary?: number[];
+      code?: number;
+      reason?: string;
+      error?: string;
+    }) => {
+      const ws = makeWsProxy(event.connectionId, raw);
 
-    switch (event.eventType) {
-      case "open":
-        if (event.remoteAddr) {
-          const meta = connectionMetas.get(event.connectionId);
-          if (meta) meta.remoteAddress = event.remoteAddr;
-        }
-        wsHandlers.open?.(ws);
-        break;
+      switch (event.eventType) {
+        case "open":
+          if (event.remoteAddr) {
+            const meta = connectionMetas.get(event.connectionId);
+            if (meta) meta.remoteAddress = event.remoteAddr;
+          }
+          wsHandlers.open?.(ws);
+          break;
 
-      case "message":
-        if (event.text != null) {
-          wsHandlers.message?.(ws, event.text);
-        } else if (event.binary != null) {
-          wsHandlers.message?.(ws, new Uint8Array(event.binary));
-        }
-        break;
+        case "message":
+          if (event.text != null) {
+            wsHandlers.message?.(ws, event.text);
+          } else if (event.binary != null) {
+            wsHandlers.message?.(ws, new Uint8Array(event.binary));
+          }
+          break;
 
-      case "close":
-        connectionMetas.delete(event.connectionId);
-        wsHandlers.close?.(ws, event.code ?? 1000, event.reason ?? "");
-        break;
+        case "close":
+          connectionMetas.delete(event.connectionId);
+          wsHandlers.close?.(ws, event.code ?? 1000, event.reason ?? "");
+          break;
 
-      case "error":
-        wsHandlers.error?.(ws, new Error(event.error ?? "WebSocket error"));
-        break;
+        case "error":
+          wsHandlers.error?.(ws, new Error(event.error ?? "WebSocket error"));
+          break;
 
-      case "disconnect":
-        connectionMetas.delete(event.connectionId);
-        wsHandlers.close?.(ws, event.code ?? 1000, event.reason ?? "");
-        break;
-    }
-  });
+        case "disconnect":
+          connectionMetas.delete(event.connectionId);
+          wsHandlers.close?.(ws, event.code ?? 1000, event.reason ?? "");
+          break;
+      }
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -512,8 +566,10 @@ export async function serve(options: ServeOptions): Promise<Server> {
       for (let i = 0; i < reqHeaders.length; i += 2) {
         const k = reqHeaders[i];
         const v = reqHeaders[i + 1];
-        if (k === "upgrade" && v.toLowerCase() === "websocket") hasWsUpgrade = true;
-        if (k === "connection" && v.toLowerCase().includes("upgrade")) hasConnUpgrade = true;
+        if (k === "upgrade" && v.toLowerCase() === "websocket")
+          hasWsUpgrade = true;
+        if (k === "connection" && v.toLowerCase().includes("upgrade"))
+          hasConnUpgrade = true;
       }
 
       if (hasWsUpgrade && hasConnUpgrade) {
