@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use bytes::Bytes;
+use dashmap::DashMap;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
@@ -14,6 +15,7 @@ use napi_derive::napi;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::{AbortHandle, JoinHandle};
+
 
 use crate::types::*;
 use crate::websocket;
@@ -27,12 +29,14 @@ struct ServerInner {
     on_ws_event: Mutex<Option<Arc<WsEventTsfn>>>,
     pending: Vec<Mutex<HashMap<u32, oneshot::Sender<ResponseData>>>>,
     ws_senders: websocket::WsSenders,
-    ws_subscriptions: Mutex<HashMap<String, HashSet<String>>>,
-    ws_topics: Mutex<HashMap<String, HashSet<String>>>,
+    ws_subscriptions: DashMap<String, HashSet<String>>,
+    ws_topics: DashMap<String, HashSet<String>>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     accept_task: Mutex<Option<JoinHandle<()>>>,
     conn_abort_handles: Mutex<Vec<AbortHandle>>,
 }
+
+type Mutex<T> = std::sync::Mutex<T>;
 
 #[napi]
 pub struct HttpServer {
@@ -52,15 +56,15 @@ impl HttpServer {
         const PENDING_SHARDS: usize = 16;
         HttpServer {
             inner: Arc::new(ServerInner {
-                on_request: Mutex::new(None),
-                on_ws_event: Mutex::new(None),
-                pending: (0..PENDING_SHARDS).map(|_| Mutex::new(HashMap::new())).collect(),
-                ws_senders: Arc::new(Mutex::new(HashMap::new())),
-                ws_subscriptions: Mutex::new(HashMap::new()),
-                ws_topics: Mutex::new(HashMap::new()),
-                shutdown_tx: Mutex::new(None),
-                accept_task: Mutex::new(None),
-                conn_abort_handles: Mutex::new(Vec::new()),
+                on_request: std::sync::Mutex::new(None),
+                on_ws_event: std::sync::Mutex::new(None),
+                pending: (0..PENDING_SHARDS).map(|_| std::sync::Mutex::new(HashMap::new())).collect(),
+                ws_senders: Arc::new(DashMap::new()),
+                ws_subscriptions: DashMap::new(),
+                ws_topics: DashMap::new(),
+                shutdown_tx: std::sync::Mutex::new(None),
+                accept_task: std::sync::Mutex::new(None),
+                conn_abort_handles: std::sync::Mutex::new(Vec::new()),
             }),
         }
     }
@@ -104,7 +108,6 @@ impl HttpServer {
 
     #[napi]
     pub async fn close(&self, close_active_connections: Option<bool>) {
-        // 1. Stop accepting new connections
         if let Some(tx) = self.inner.shutdown_tx.lock().unwrap().take() {
             let _ = tx.send(());
         }
@@ -114,7 +117,6 @@ impl HttpServer {
             let _ = h.await;
         }
 
-        // 2. Optionally close active connections
         if close_active_connections.unwrap_or(false) {
             let handles = self.inner.conn_abort_handles.lock().unwrap().drain(..).collect::<Vec<_>>();
             for h in handles {
@@ -122,7 +124,6 @@ impl HttpServer {
             }
         }
 
-        // 3. Drop callbacks & pending requests to allow the event loop to exit
         *self.inner.on_request.lock().unwrap() = None;
         *self.inner.on_ws_event.lock().unwrap() = None;
         for shard in &self.inner.pending {
@@ -148,10 +149,8 @@ impl HttpServer {
     #[napi]
     pub fn ws_send(&self, connection_id: String, message: String) -> i32 {
         let len = message.len() as i32;
-        let tx = {
-            let senders = self.inner.ws_senders.lock().unwrap();
-            senders.get(&connection_id).cloned()
-        };
+        let tx = self.inner.ws_senders.get(&connection_id)
+            .map(|e| e.value().clone());
         if let Some(tx) = tx {
             match tx.try_send(tokio_tungstenite::tungstenite::Message::Text(message)) {
                 Ok(_) => len,
@@ -166,10 +165,8 @@ impl HttpServer {
     #[napi]
     pub fn ws_send_binary(&self, connection_id: String, data: Vec<u8>) -> i32 {
         let len = data.len() as i32;
-        let tx = {
-            let senders = self.inner.ws_senders.lock().unwrap();
-            senders.get(&connection_id).cloned()
-        };
+        let tx = self.inner.ws_senders.get(&connection_id)
+            .map(|e| e.value().clone());
         if let Some(tx) = tx {
             match tx.try_send(tokio_tungstenite::tungstenite::Message::Binary(data)) {
                 Ok(_) => len,
@@ -183,10 +180,8 @@ impl HttpServer {
 
     #[napi]
     pub fn ws_close(&self, connection_id: String) {
-        let tx = {
-            let senders = self.inner.ws_senders.lock().unwrap();
-            senders.get(&connection_id).cloned()
-        };
+        let tx = self.inner.ws_senders.get(&connection_id)
+            .map(|e| e.value().clone());
         if let Some(tx) = tx {
             let _ = tx.try_send(tokio_tungstenite::tungstenite::Message::Close(None));
         }
@@ -194,47 +189,43 @@ impl HttpServer {
 
     #[napi]
     pub fn ws_connection_count(&self) -> u32 {
-        self.inner.ws_senders.lock().unwrap().len() as u32
+        self.inner.ws_senders.len() as u32
     }
 
     #[napi]
     pub fn ws_connection_ids(&self) -> Vec<String> {
-        self.inner
-            .ws_senders
-            .lock()
-            .unwrap()
-            .keys()
-            .cloned()
+        self.inner.ws_senders.iter()
+            .map(|e| e.key().clone())
             .collect()
     }
 
     #[napi]
     pub fn ws_subscribe(&self, connection_id: String, topic: String) {
-        let mut subs = self.inner.ws_subscriptions.lock().unwrap();
-        let mut topics = self.inner.ws_topics.lock().unwrap();
-        subs.entry(connection_id.clone())
-            .or_default()
+        self.inner.ws_subscriptions
+            .entry(connection_id.clone())
+            .or_insert_with(HashSet::new)
             .insert(topic.clone());
-        topics.entry(topic).or_default().insert(connection_id);
+        self.inner.ws_topics
+            .entry(topic)
+            .or_insert_with(HashSet::new)
+            .insert(connection_id);
     }
 
     #[napi]
     pub fn ws_unsubscribe(&self, connection_id: String, topic: String) {
-        let mut subs = self.inner.ws_subscriptions.lock().unwrap();
-        let mut topics = self.inner.ws_topics.lock().unwrap();
-        if let Some(s) = subs.get_mut(&connection_id) {
-            s.remove(&topic);
+        if let Some(mut entry) = self.inner.ws_subscriptions.get_mut(&connection_id) {
+            entry.remove(&topic);
         }
-        if let Some(t) = topics.get_mut(&topic) {
-            t.remove(&connection_id);
+        if let Some(mut entry) = self.inner.ws_topics.get_mut(&topic) {
+            entry.remove(&connection_id);
         }
     }
 
     #[napi]
     pub fn ws_is_subscribed(&self, connection_id: String, topic: String) -> bool {
-        let subs = self.inner.ws_subscriptions.lock().unwrap();
-        subs.get(&connection_id)
-            .map(|s| s.contains(&topic))
+        self.inner.ws_subscriptions
+            .get(&connection_id)
+            .map(|e| e.value().contains(&topic))
             .unwrap_or(false)
     }
 
@@ -250,9 +241,8 @@ impl HttpServer {
 
     fn publish_internal(&self, exclude_id: Option<String>, topic: String, message: String) -> u32 {
         let target_ids: Vec<String> = {
-            let topics = self.inner.ws_topics.lock().unwrap();
-            if let Some(subs) = topics.get(&topic) {
-                subs.iter()
+            if let Some(entry) = self.inner.ws_topics.get(&topic) {
+                entry.value().iter()
                     .filter(|id| Some(*id) != exclude_id.as_ref())
                     .cloned()
                     .collect()
@@ -265,10 +255,8 @@ impl HttpServer {
         let msg = tokio_tungstenite::tungstenite::Message::Text(message);
 
         for id in target_ids {
-            let tx = {
-                let senders = self.inner.ws_senders.lock().unwrap();
-                senders.get(&id).cloned()
-            };
+            let tx = self.inner.ws_senders.get(&id)
+                .map(|e| e.value().clone());
             if let Some(tx) = tx {
                 if tx.try_send(msg.clone()).is_ok() {
                     sent_count += 1;
@@ -324,7 +312,9 @@ async fn handle_connection(
         .http1()
         .max_buf_size(65536)
         .pipeline_flush(true)
-        .keep_alive(true);
+        .keep_alive(true)
+        .max_headers(200);
+    builder.http2().max_concurrent_streams(256);
     if let Err(e) = builder.serve_connection_with_upgrades(io, svc).await {
         eprintln!("connection error: {}", e);
     }
@@ -338,20 +328,11 @@ async fn handle_request(
     let is_upgrade = websocket::is_ws_upgrade(&req);
     let mut req_opt = Some(req);
 
-    let (method, url, path, query, headers, body_str) = if is_upgrade {
+    let (method, url, path, headers, body_bytes) = if is_upgrade {
         let req_ref = req_opt.as_ref().unwrap();
         let method = req_ref.method().to_string();
         let url = req_ref.uri().to_string();
         let path = req_ref.uri().path().to_string();
-        let query: HashMap<String, String> = req_ref
-            .uri()
-            .query()
-            .map(|q| {
-                url::form_urlencoded::parse(q.as_bytes())
-                    .map(|(k, v)| (k.into_owned(), v.into_owned()))
-                    .collect()
-            })
-            .unwrap_or_default();
         let headers: Vec<String> = {
             let mut v = Vec::with_capacity(req_ref.headers().len() * 2);
             for (k, val) in req_ref.headers().iter() {
@@ -360,7 +341,7 @@ async fn handle_request(
             }
             v
         };
-        (method, url, path, query, headers, None)
+        (method, url, path, headers, None)
     } else {
         let req = req_opt.take().unwrap();
         let (parts, body) = req.into_parts();
@@ -368,7 +349,7 @@ async fn handle_request(
         let is_get_head = parts.method == hyper::Method::GET
             || parts.method == hyper::Method::HEAD
             || parts.method == hyper::Method::OPTIONS;
-        let body_str = if is_get_head {
+        let body_bytes = if is_get_head {
             None
         } else {
             let body_bytes = match body.collect().await {
@@ -380,19 +361,14 @@ async fn handle_request(
                         .unwrap());
                 }
             };
-            String::from_utf8(body_bytes.to_vec()).ok()
+            if body_bytes.is_empty() {
+                None
+            } else {
+                Some(body_bytes.to_vec())
+            }
         };
         let url = parts.uri.to_string();
         let path = parts.uri.path().to_string();
-        let query: HashMap<String, String> = parts
-            .uri
-            .query()
-            .map(|q| {
-                url::form_urlencoded::parse(q.as_bytes())
-                    .map(|(k, v)| (k.into_owned(), v.into_owned()))
-                    .collect()
-            })
-            .unwrap_or_default();
         let headers: Vec<String> = {
             let mut v = Vec::with_capacity(parts.headers.len() * 2);
             for (k, val) in parts.headers.iter() {
@@ -401,7 +377,7 @@ async fn handle_request(
             }
             v
         };
-        (method_str, url, path, query, headers, body_str)
+        (method_str, url, path, headers, body_bytes)
     };
 
     let request_id = next_request_id();
@@ -411,8 +387,7 @@ async fn handle_request(
         url,
         path,
         headers,
-        body: body_str,
-        query,
+        body: body_bytes,
         remote_addr: remote_addr.clone(),
     };
 
@@ -536,12 +511,10 @@ async fn handle_ws_upgrade(
                 let state_clone = state.clone();
                 let cid_clone = connection_id.clone();
                 let cleanup = move || {
-                    let mut subs = state_clone.ws_subscriptions.lock().unwrap();
-                    let mut topics = state_clone.ws_topics.lock().unwrap();
-                    if let Some(user_topics) = subs.remove(&cid_clone) {
+                    if let Some((_, user_topics)) = state_clone.ws_subscriptions.remove(&cid_clone) {
                         for topic in user_topics {
-                            if let Some(t) = topics.get_mut(&topic) {
-                                t.remove(&cid_clone);
+                            if let Some(mut entry) = state_clone.ws_topics.get_mut(&topic) {
+                                entry.remove(&cid_clone);
                             }
                         }
                     }

@@ -1,5 +1,6 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use bytes::Bytes;
+use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::Full;
 use hyper::body::Incoming;
@@ -8,14 +9,13 @@ use hyper_util::rt::TokioIo;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::{Status, Unknown};
 use sha1::{Digest, Sha1};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite;
 
 use crate::types::WsEvent;
 
-pub type WsSenders = Arc<Mutex<HashMap<String, mpsc::Sender<tungstenite::Message>>>>;
+pub type WsSenders = Arc<DashMap<String, mpsc::Sender<tungstenite::Message>>>;
 pub type WsEventTsfn =
     Arc<ThreadsafeFunction<WsEvent, Unknown<'static>, WsEvent, Status, false, false, 0>>;
 
@@ -66,10 +66,7 @@ pub async fn handle_ws_connection(
 
     let (tx, mut rx) = mpsc::channel::<tungstenite::Message>(256);
 
-    {
-        let mut map = senders.lock().unwrap();
-        map.insert(connection_id.clone(), tx);
-    }
+    senders.insert(connection_id.clone(), tx);
 
     let send_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
@@ -94,7 +91,7 @@ pub async fn handle_ws_connection(
                             tungstenite::Message::Text(text) => WsEvent {
                                 event_type: "message".to_string(),
                                 connection_id: conn_id_recv.clone(),
-                                text: Some(text.to_string()),
+                                text: Some(text),
                                 binary: None,
                                 error: None,
                                 code: None,
@@ -105,7 +102,7 @@ pub async fn handle_ws_connection(
                                 event_type: "message".to_string(),
                                 connection_id: conn_id_recv.clone(),
                                 text: None,
-                                binary: Some(data.to_vec()),
+                                binary: Some(data),
                                 error: None,
                                 code: None,
                                 reason: None,
@@ -165,10 +162,7 @@ pub async fn handle_ws_connection(
     let _ = recv_task.await;
     send_task.abort();
 
-    {
-        let mut map = senders_recv.lock().unwrap();
-        map.remove(&connection_id);
-    }
+    senders_recv.remove(&connection_id);
 
     cleanup();
 

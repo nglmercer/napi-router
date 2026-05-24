@@ -9,17 +9,15 @@ const _require = createRequire(import.meta.url);
 const native = _require(resolve(__dirname, "../index.js"));
 const { HttpServer } = native;
 
-// ---------------------------------------------------------------------------
-// Patch global Response to capture body synchronously, avoiding the
-// microtask delay of await response.text() for simple string bodies.
-// ---------------------------------------------------------------------------
+const textEncoder = new TextEncoder();
+
 const OrigResponse = globalThis.Response;
 const OrigResponseJSON = OrigResponse.json;
 
 class FastResponse extends OrigResponse {
   constructor(body, init) {
     super(body, init);
-    if (typeof body === "string") {
+    if (typeof body === "string" || body instanceof Uint8Array || body instanceof ArrayBuffer) {
       this._rawBody = body;
     }
   }
@@ -36,27 +34,14 @@ FastResponse.error = OrigResponse.error;
 FastResponse.redirect = OrigResponse.redirect;
 globalThis.Response = FastResponse;
 
-// ---------------------------------------------------------------------------
-// Request context tracking (WeakMap so GC can collect when request is done)
-// ---------------------------------------------------------------------------
 const requestContexts = new WeakMap();
 
-// ---------------------------------------------------------------------------
-// WebSocket connection metadata
-// ---------------------------------------------------------------------------
 const connectionMetas = new Map();
 
-// ---------------------------------------------------------------------------
-// Unique ID generator
-// ---------------------------------------------------------------------------
 let nextId = 1;
 function uniqueId(prefix = "c") {
   return `${prefix}_${nextId++}_${Date.now()}`;
 }
-
-// ---------------------------------------------------------------------------
-// ServerHandle
-// ---------------------------------------------------------------------------
 
 class ServerHandle {
   #raw;
@@ -96,13 +81,6 @@ class ServerHandle {
     await this.#raw.close(closeActiveConnections).catch(() => {});
   }
 
-  /**
-   * Upgrade an HTTP request to a WebSocket connection.
-   * Returns true if the upgrade was accepted, false otherwise.
-   * @param {Request} req
-   * @param {{ data?: unknown }} [options]
-   * @returns {boolean}
-   */
   upgrade(req, options = {}) {
     const ctx = requestContexts.get(req);
     if (!ctx || ctx.upgraded) return false;
@@ -119,25 +97,23 @@ class ServerHandle {
     return true;
   }
 
-  /**
-   * Publish a message to all subscribers of a topic.
-   * @param {string} topic
-   * @param {string | ArrayBuffer | Uint8Array} data
-   * @returns {number}
-   */
   publish(topic, data) {
     const message = typeof data === "string" ? data : new TextDecoder().decode(data);
     return this.#raw.serverPublish(topic, message);
   }
-
-  // ── WebSocket helpers ──────────────────────────────────────────────────
 
   sendToWs(connectionId, message) {
     this.#raw.wsSend(connectionId, message);
   }
 
   sendBinaryToWs(connectionId, data) {
-    this.#raw.wsSendBinary(connectionId, data);
+    if (data instanceof Uint8Array) {
+      this.#raw.wsSendBinary(connectionId, data);
+    } else if (data instanceof ArrayBuffer) {
+      this.#raw.wsSendBinary(connectionId, new Uint8Array(data));
+    } else {
+      this.#raw.wsSendBinary(connectionId, data);
+    }
   }
 
   closeWs(connectionId) {
@@ -152,10 +128,6 @@ class ServerHandle {
     return "ServerHandle";
   }
 }
-
-// ---------------------------------------------------------------------------
-// Request bridge
-// ---------------------------------------------------------------------------
 
 function toWebRequest(data, baseUrl) {
   const url = data.url.startsWith("http") ? data.url : `${baseUrl}${data.url}`;
@@ -185,9 +157,13 @@ function toWebRequest(data, baseUrl) {
   return new Request(url, init);
 }
 
-// ---------------------------------------------------------------------------
-// Response bridge
-// ---------------------------------------------------------------------------
+function toBodyArray(body) {
+  if (body == null) return undefined;
+  if (typeof body === "string") return Array.from(textEncoder.encode(body));
+  if (body instanceof Uint8Array) return Array.from(body);
+  if (body instanceof ArrayBuffer) return Array.from(new Uint8Array(body));
+  return undefined;
+}
 
 function fromWebResponse(response) {
   const headers = [];
@@ -197,22 +173,17 @@ function fromWebResponse(response) {
 
   const raw = response._rawBody;
   if (raw !== undefined) {
-    return {
-      status: response.status,
-      headers,
-      body: raw,
-    };
+    const body = toBodyArray(raw);
+    if (body !== undefined) {
+      return { status: response.status, headers, body };
+    }
   }
 
-  return response.text().then(
-    (body) => ({ status: response.status, headers, body }),
-    () => ({ status: response.status, headers, body: "" }),
+  return response.arrayBuffer().then(
+    (buf) => ({ status: response.status, headers, body: new Uint8Array(buf) }),
+    () => ({ status: response.status, headers, body: new Uint8Array(0) }),
   );
 }
-
-// ---------------------------------------------------------------------------
-// WebSocket bridge
-// ---------------------------------------------------------------------------
 
 function makeWsProxy(connectionId, raw) {
   const getMeta = () => connectionMetas.get(connectionId) ?? {
@@ -239,6 +210,8 @@ function makeWsProxy(connectionId, raw) {
 
     send(msg) {
       if (typeof msg === "string") return raw.wsSend(connectionId, msg);
+      if (msg instanceof Uint8Array) return raw.wsSendBinary(connectionId, msg);
+      if (msg instanceof ArrayBuffer) return raw.wsSendBinary(connectionId, new Uint8Array(msg));
       return raw.wsSendBinary(connectionId, Array.from(msg));
     },
 
@@ -283,7 +256,7 @@ function wireWebSocket(raw, wsHandlers) {
         if (event.text != null) {
           wsHandlers.message?.(ws, event.text);
         } else if (event.binary != null) {
-          wsHandlers.message?.(ws, new Uint8Array(event.binary));
+          wsHandlers.message?.(ws, event.binary);
         }
         break;
 
@@ -303,10 +276,6 @@ function wireWebSocket(raw, wsHandlers) {
     }
   });
 }
-
-// ---------------------------------------------------------------------------
-// serve()
-// ---------------------------------------------------------------------------
 
 export async function serve(options) {
   const {
@@ -351,7 +320,7 @@ export async function serve(options) {
       }
 
       if (reqCtx.upgraded && reqCtx.connectionId) {
-        raw.sendResponse(requestId, { status: 101, headers: [], body: "", upgrade: true, connectionId: reqCtx.connectionId });
+        raw.sendResponse(requestId, { status: 101, headers: [], upgrade: true, connectionId: reqCtx.connectionId });
         return;
       }
 
@@ -368,7 +337,7 @@ export async function serve(options) {
       if (hasWsUpgrade && hasConnUpgrade) {
         const connectionId = uniqueId("ws");
         connectionMetas.set(connectionId, { data: null, remoteAddress: requestData.remoteAddr ?? null });
-        raw.sendResponse(requestId, { status: 101, headers: [], body: "", upgrade: true, connectionId });
+        raw.sendResponse(requestId, { status: 101, headers: [], upgrade: true, connectionId });
         return;
       }
 
@@ -403,10 +372,6 @@ export async function serve(options) {
   handle = new ServerHandle(raw, info.port, info.address);
   return handle;
 }
-
-// ---------------------------------------------------------------------------
-// tryServe()
-// ---------------------------------------------------------------------------
 
 export async function tryServe(options) {
   try {

@@ -30,15 +30,14 @@ export interface RequestData {
   url: string
   path: string
   headers: Array<string>
-  body?: string
-  query: Record<string, string>
+  body?: Array<number>
   remoteAddr: string
 }
 
 export interface ResponseData {
   status: number
   headers: Array<string>
-  body?: string
+  body?: Array<number>
   upgrade?: boolean
   connectionId?: string
 }

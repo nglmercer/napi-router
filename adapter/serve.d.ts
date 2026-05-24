@@ -8,10 +8,6 @@
 import type { HttpServer } from '../index.js';
 export type { HttpServer };
 
-// ---------------------------------------------------------------------------
-// WebSocket handler interface (mirrors Bun's websocket option)
-// ---------------------------------------------------------------------------
-
 export interface ServerWebSocket {
   /** Unique connection identifier assigned by napi-router */
   readonly id: string;
@@ -53,10 +49,6 @@ export interface WebSocketHandlers {
   perMessageDeflate?: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// ServerHandle — returned by serve()
-// ---------------------------------------------------------------------------
-
 export declare class Server {
   /** Bound port */
   readonly port: number;
@@ -75,7 +67,7 @@ export declare class Server {
   /** Send a text message to a specific WebSocket connection */
   sendToWs(connectionId: string, message: string): void;
   /** Send binary data to a specific WebSocket connection */
-  sendBinaryToWs(connectionId: string, data: number[]): void;
+  sendBinaryToWs(connectionId: string, data: number[] | Uint8Array | ArrayBuffer): void;
   /** Close a specific WebSocket connection */
   closeWs(connectionId: string): void;
   /** All currently open WebSocket connection IDs */
@@ -93,10 +85,6 @@ export declare class Server {
   /** Publish a message to all subscribers of a topic */
   publish(topic: string, data: string | ArrayBufferView | ArrayBuffer, compress?: boolean): number;
 }
-
-// ---------------------------------------------------------------------------
-// serve() options
-// ---------------------------------------------------------------------------
 
 export interface ServeOptions {
   /** TCP port to listen on. Defaults to 3000. */
@@ -120,10 +108,6 @@ export interface ServeOptions {
    */
   error?(error: Error): Response | Promise<Response>;
 }
-
-// ---------------------------------------------------------------------------
-// Exports
-// ---------------------------------------------------------------------------
 
 /**
  * Start an HTTP server with a Bun-compatible `serve()` API.

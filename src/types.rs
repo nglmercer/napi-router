@@ -1,5 +1,4 @@
 use napi_derive::napi;
-use std::collections::HashMap;
 
 #[napi(object)]
 #[derive(Clone, Debug)]
@@ -8,8 +7,7 @@ pub struct RequestData {
     pub url: String,
     pub path: String,
     pub headers: Vec<String>,
-    pub body: Option<String>,
-    pub query: HashMap<String, String>,
+    pub body: Option<Vec<u8>>,
     pub remote_addr: String,
 }
 
@@ -18,7 +16,7 @@ pub struct RequestData {
 pub struct ResponseData {
     pub status: u16,
     pub headers: Vec<String>,
-    pub body: Option<String>,
+    pub body: Option<Vec<u8>>,
     pub upgrade: Option<bool>,
     pub connection_id: Option<String>,
 }
