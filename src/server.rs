@@ -21,7 +21,7 @@ use crate::types::*;
 use crate::websocket;
 
 type RequestTsfn =
-    ThreadsafeFunction<RequestCall, Unknown<'static>, RequestCall, Status, false, false, 0>;
+    ThreadsafeFunction<RequestData, Unknown<'static>, RequestData, Status, false, false, 0>;
 type WsEventTsfn = ThreadsafeFunction<WsEvent, Unknown<'static>, WsEvent, Status, false, false, 0>;
 
 struct ServerInner {
@@ -419,6 +419,7 @@ async fn handle_request(
         headers,
         body: body_bytes,
         remote_addr: remote_addr.clone(),
+        request_id,
     };
 
     let (tx, rx) = oneshot::channel::<ResponseData>();
@@ -433,11 +434,7 @@ async fn handle_request(
     };
 
     if let Some(tsfn) = tsfn {
-        let call = RequestCall {
-            request: request_data,
-            request_id,
-        };
-        if tsfn.call(call, ThreadsafeFunctionCallMode::NonBlocking) != Status::Ok {
+        if tsfn.call(request_data, ThreadsafeFunctionCallMode::NonBlocking) != Status::Ok {
             eprintln!("on_request call failed");
         }
     } else {
