@@ -278,7 +278,7 @@ describe('server.closeWs()', () => {
     await s.closeWs(openedId!);
     await Promise.race([closed, sleep(500)]);
 
-    expect([WebSocket.CLOSING, WebSocket.CLOSED]).toContain(ws.readyState);
+    expect([WebSocket.CLOSING, WebSocket.CLOSED] as number[]).toContain(ws.readyState);
 
     await sleep(50);
     s.stop();
