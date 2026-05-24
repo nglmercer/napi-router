@@ -29,7 +29,7 @@ export interface RequestData {
   method: string
   url: string
   path: string
-  headers: Array<Array<string>>
+  headers: Array<string>
   body?: string
   query: Record<string, string>
   remoteAddr: string
@@ -37,7 +37,7 @@ export interface RequestData {
 
 export interface ResponseData {
   status: number
-  headers: Array<Array<string>>
+  headers: Array<string>
   body?: string
   upgrade?: boolean
   connectionId?: string

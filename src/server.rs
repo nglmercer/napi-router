@@ -352,16 +352,14 @@ async fn handle_request(
                     .collect()
             })
             .unwrap_or_default();
-        let headers: Vec<Vec<String>> = req_ref
-            .headers()
-            .iter()
-            .map(|(k, v)| {
-                vec![
-                    k.as_str().to_lowercase(),
-                    v.to_str().unwrap_or("").to_string(),
-                ]
-            })
-            .collect();
+        let headers: Vec<String> = {
+            let mut v = Vec::with_capacity(req_ref.headers().len() * 2);
+            for (k, val) in req_ref.headers().iter() {
+                v.push(k.as_str().to_lowercase());
+                v.push(val.to_str().unwrap_or("").to_string());
+            }
+            v
+        };
         (method, url, path, query, headers, None)
     } else {
         let req = req_opt.take().unwrap();
@@ -395,22 +393,19 @@ async fn handle_request(
                     .collect()
             })
             .unwrap_or_default();
-        let headers: Vec<Vec<String>> = parts
-            .headers
-            .iter()
-            .map(|(k, v)| {
-                vec![
-                    k.as_str().to_lowercase(),
-                    v.to_str().unwrap_or("").to_string(),
-                ]
-            })
-            .collect();
+        let headers: Vec<String> = {
+            let mut v = Vec::with_capacity(parts.headers.len() * 2);
+            for (k, val) in parts.headers.iter() {
+                v.push(k.as_str().to_lowercase());
+                v.push(val.to_str().unwrap_or("").to_string());
+            }
+            v
+        };
         (method_str, url, path, query, headers, body_str)
     };
 
     let request_id = next_request_id();
 
-    let remote_addr_clone = remote_addr.clone();
     let request_data = RequestData {
         method,
         url,
@@ -418,7 +413,7 @@ async fn handle_request(
         headers,
         body: body_str,
         query,
-        remote_addr: remote_addr_clone,
+        remote_addr: remote_addr.clone(),
     };
 
     let (tx, rx) = oneshot::channel::<ResponseData>();
@@ -464,7 +459,7 @@ async fn handle_request(
             return handle_ws_upgrade(
                 req,
                 state,
-                remote_addr.clone(),
+                remote_addr,
                 connection_id,
                 response_data.headers,
             )
@@ -476,8 +471,10 @@ async fn handle_request(
         StatusCode::from_u16(response_data.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
     );
 
-    for pair in &response_data.headers {
-        builder = builder.header(pair[0].as_str(), pair[1].as_str());
+    for chunk in response_data.headers.chunks(2) {
+        if let [name, value] = chunk {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
     }
 
     let body = response_data.body.unwrap_or_default();
@@ -489,7 +486,7 @@ async fn handle_ws_upgrade(
     state: Arc<ServerInner>,
     _remote_addr: String,
     connection_id: String,
-    extra_headers: Vec<Vec<String>>,
+    extra_headers: Vec<String>,
 ) -> std::result::Result<Response<Full<Bytes>>, hyper::Error> {
     let ws_key = req
         .headers()
@@ -499,11 +496,13 @@ async fn handle_ws_upgrade(
         .to_string();
 
     let mut upgrade_response = websocket::build_ws_upgrade_response(&ws_key);
-    for pair in extra_headers {
-        upgrade_response.headers_mut().append(
-            hyper::header::HeaderName::from_bytes(pair[0].as_bytes()).unwrap(),
-            hyper::header::HeaderValue::from_str(&pair[1]).unwrap(),
-        );
+    for chunk in extra_headers.chunks(2) {
+        if let [name, value] = chunk {
+            upgrade_response.headers_mut().append(
+                hyper::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                hyper::header::HeaderValue::from_str(value).unwrap(),
+            );
+        }
     }
 
     let event_tsfn = {

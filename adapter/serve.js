@@ -163,8 +163,8 @@ function toWebRequest(data, baseUrl) {
   const h = data.headers;
   const headers = new Headers();
   if (h) {
-    for (let i = 0; i < h.length; i++) {
-      headers.set(h[i][0], h[i][1]);
+    for (let i = 0; i < h.length; i += 2) {
+      headers.set(h[i], h[i + 1]);
     }
   }
 
@@ -192,7 +192,7 @@ function toWebRequest(data, baseUrl) {
 function fromWebResponse(response) {
   const headers = [];
   response.headers.forEach((value, key) => {
-    headers.push([key, value]);
+    headers.push(key, value);
   });
 
   const raw = response._rawBody;
@@ -326,85 +326,78 @@ export async function serve(options) {
 
   wireWebSocket(raw, websocket);
 
-  raw.onRequest(async ({ request: requestData, requestId }) => {
-    const baseUrl = `http://${hostname}:${port}`;
-    const webRequest = toWebRequest(requestData, baseUrl);
+  const baseUrl = `http://${hostname}:${port}`;
 
-    // Store request context for potential upgrade()
-    const reqCtx = { requestId, upgraded: false, connectionId: null, remoteAddr: requestData.remoteAddr };
-    requestContexts.set(webRequest, reqCtx);
+  if (websocket) {
+    raw.onRequest(async ({ request: requestData, requestId }) => {
+      const webRequest = toWebRequest(requestData, baseUrl);
 
-    // Normal HTTP request — call the user's fetch handler
-    let response;
-    try {
-      response = await fetchHandler(webRequest, handle);
-      if (!(response instanceof Response)) {
-        response = new Response(
-          "Internal Server Error: fetch handler must return a Response",
-          { status: 500 },
-        );
-      }
-    } catch (err) {
-      if (typeof errorHandler === "function") {
-        try {
-          response = await errorHandler(err);
-        } catch {
+      const reqCtx = { requestId, upgraded: false, connectionId: null, remoteAddr: requestData.remoteAddr };
+      requestContexts.set(webRequest, reqCtx);
+
+      let response;
+      try {
+        response = await fetchHandler(webRequest, handle);
+        if (!(response instanceof Response)) {
+          response = new Response("Internal Server Error: fetch handler must return a Response", { status: 500 });
+        }
+      } catch (err) {
+        if (typeof errorHandler === "function") {
+          try { response = await errorHandler(err); } catch { response = new Response("Internal Server Error", { status: 500 }); }
+        } else {
+          console.error("[napi-router] Unhandled error in fetch handler:", err);
           response = new Response("Internal Server Error", { status: 500 });
         }
-      } else {
-        console.error("[napi-router] Unhandled error in fetch handler:", err);
-        response = new Response("Internal Server Error", { status: 500 });
       }
-    }
 
-    // If the user called server.upgrade(req) inside the fetch handler,
-    // honour that instead of using the Response they returned.
-    if (reqCtx.upgraded && reqCtx.connectionId) {
-      raw.sendResponse(requestId, {
-        status: 101,
-        headers: [],
-        body: "",
-        upgrade: true,
-        connectionId: reqCtx.connectionId,
-      });
-      return;
-    }
+      if (reqCtx.upgraded && reqCtx.connectionId) {
+        raw.sendResponse(requestId, { status: 101, headers: [], body: "", upgrade: true, connectionId: reqCtx.connectionId });
+        return;
+      }
 
-    // Auto-detect WebSocket upgrade fallback: if the request has Upgrade: websocket,
-    // and the user did NOT call upgrade() manually, but websocket option is provided,
-    // perform the upgrade automatically.
-    const reqHeaders = requestData.headers ?? [];
-    const isUpgrade =
-      reqHeaders.some(([k, v]) => k === "upgrade" && v.toLowerCase() === "websocket") &&
-      reqHeaders.some(([k, v]) => k === "connection" && v.toLowerCase().includes("upgrade"));
+      const reqHeaders = requestData.headers ?? [];
+      let hasWsUpgrade = false;
+      let hasConnUpgrade = false;
+      for (let i = 0; i < reqHeaders.length; i += 2) {
+        const k = reqHeaders[i];
+        const v = reqHeaders[i + 1];
+        if (k === "upgrade" && v.toLowerCase() === "websocket") hasWsUpgrade = true;
+        if (k === "connection" && v.toLowerCase().includes("upgrade")) hasConnUpgrade = true;
+      }
 
-    if (isUpgrade && websocket) {
-      const connectionId = uniqueId("ws");
-      reqCtx.upgraded = true;
-      reqCtx.connectionId = connectionId;
+      if (hasWsUpgrade && hasConnUpgrade) {
+        const connectionId = uniqueId("ws");
+        connectionMetas.set(connectionId, { data: null, remoteAddress: requestData.remoteAddr ?? null });
+        raw.sendResponse(requestId, { status: 101, headers: [], body: "", upgrade: true, connectionId });
+        return;
+      }
 
-      connectionMetas.set(connectionId, {
-        data: null,
-        remoteAddress: requestData.remoteAddr ?? null,
-      });
+      const responseData = fromWebResponse(response);
+      raw.sendResponse(requestId, typeof responseData.then === "function" ? await responseData : responseData);
+    });
+  } else {
+    raw.onRequest(async ({ request: requestData, requestId }) => {
+      const webRequest = toWebRequest(requestData, baseUrl);
 
-      raw.sendResponse(requestId, {
-        status: 101,
-        headers: [],
-        body: "",
-        upgrade: true,
-        connectionId,
-      });
-      return;
-    }
+      let response;
+      try {
+        response = await fetchHandler(webRequest, handle);
+        if (!(response instanceof Response)) {
+          response = new Response("Internal Server Error: fetch handler must return a Response", { status: 500 });
+        }
+      } catch (err) {
+        if (typeof errorHandler === "function") {
+          try { response = await errorHandler(err); } catch { response = new Response("Internal Server Error", { status: 500 }); }
+        } else {
+          console.error("[napi-router] Unhandled error in fetch handler:", err);
+          response = new Response("Internal Server Error", { status: 500 });
+        }
+      }
 
-    const responseData = fromWebResponse(response);
-    if (typeof responseData.then === "function") {
-      raw.sendResponse(requestId, await responseData);
-    } else {
-      raw.sendResponse(requestId, responseData);
-    }
-  });
+      const responseData = fromWebResponse(response);
+      raw.sendResponse(requestId, typeof responseData.then === "function" ? await responseData : responseData);
+    });
+  }
 
   const info = await raw.listen(port, hostname);
   handle = new ServerHandle(raw, info.port, info.address);

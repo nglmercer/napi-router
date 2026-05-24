@@ -7,7 +7,7 @@ pub struct RequestData {
     pub method: String,
     pub url: String,
     pub path: String,
-    pub headers: Vec<Vec<String>>,
+    pub headers: Vec<String>,
     pub body: Option<String>,
     pub query: HashMap<String, String>,
     pub remote_addr: String,
@@ -17,7 +17,7 @@ pub struct RequestData {
 #[derive(Clone, Debug)]
 pub struct ResponseData {
     pub status: u16,
-    pub headers: Vec<Vec<String>>,
+    pub headers: Vec<String>,
     pub body: Option<String>,
     pub upgrade: Option<bool>,
     pub connection_id: Option<String>,
