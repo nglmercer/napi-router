@@ -39,7 +39,9 @@ describe('After stop(), connections are refused', () => {
     const s = await serve({ port, fetch: () => new Response('ok') });
 
     // Verify it works first
-    const before = await fetch(`http://127.0.0.1:${port}/`);
+    const before = await fetch(`http://127.0.0.1:${port}/`, {
+      headers: { connection: 'close' }
+    });
     expect(before.status).toBe(200);
 
     s.stop();

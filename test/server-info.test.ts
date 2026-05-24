@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
-import { serve, nextPort, wsConnect, sleep, type Server } from './setup.js';
+import { serve, nextPort, wsConnect, sleep, closeWs, withServer, type Server } from './setup.js';
 
 let server: Server;
 const PORT = nextPort('SERVER_INFO');
@@ -118,24 +118,38 @@ describe('server.pendingRequests', () => {
 // ---------------------------------------------------------------------------
 
 describe('server.pendingWebSockets', () => {
-  it('is 0 before any WebSocket connects', () => {
-    expect(server.pendingWebSockets).toBe(0);
+  it('is 0 before any WebSocket connects', async () => {
+    await withServer(nextPort('SERVER_INFO'), {
+      fetch: () => new Response('ok')
+    }, async (s) => {
+      expect(s.pendingWebSockets).toBe(0);
+    });
   });
 
   it('increments when a WebSocket connects', async () => {
-    const ws = await wsConnect(server);
-    await sleep(30);
-    expect(server.pendingWebSockets).toBeGreaterThan(0);
-    ws.close();
-    await sleep(50);
+    await withServer(nextPort('SERVER_INFO'), {
+      fetch: () => new Response('ok'),
+      websocket: { message() {} }
+    }, async (s) => {
+      const ws = await wsConnect(s);
+      await sleep(30);
+      expect(s.pendingWebSockets).toBeGreaterThan(0);
+      await closeWs(ws);
+      await sleep(50);
+    });
   });
 
   it('decrements after the WebSocket closes', async () => {
-    const ws = await wsConnect(server);
-    await sleep(30);
-    ws.close();
-    await sleep(80);
-    expect(server.pendingWebSockets).toBe(0);
+    await withServer(nextPort('SERVER_INFO'), {
+      fetch: () => new Response('ok'),
+      websocket: { message() {} }
+    }, async (s) => {
+      const ws = await wsConnect(s);
+      await sleep(30);
+      await closeWs(ws);
+      await sleep(150);
+      expect(s.pendingWebSockets).toBe(0);
+    });
   });
 });
 
@@ -145,28 +159,42 @@ describe('server.pendingWebSockets', () => {
 
 describe('server.wsConnectionIds', () => {
   it('is an empty array when no connections', async () => {
-    await sleep(20);
-    expect(server.wsConnectionIds).toEqual([]);
+    await withServer(nextPort('SERVER_INFO'), {
+      fetch: () => new Response('ok')
+    }, async (s) => {
+      await sleep(20);
+      expect(s.wsConnectionIds).toEqual([]);
+    });
   });
 
   it('contains a string ID while a connection is open', async () => {
-    const ws = await wsConnect(server);
-    await sleep(30);
-    const ids = server.wsConnectionIds;
-    expect(ids.length).toBeGreaterThan(0);
-    expect(typeof ids[0]).toBe('string');
-    ws.close();
-    await sleep(60);
+    await withServer(nextPort('SERVER_INFO'), {
+      fetch: () => new Response('ok'),
+      websocket: { message() {} }
+    }, async (s) => {
+      const ws = await wsConnect(s);
+      await sleep(30);
+      const ids = s.wsConnectionIds;
+      expect(ids.length).toBeGreaterThan(0);
+      expect(typeof ids[0]).toBe('string');
+      await closeWs(ws);
+      await sleep(50);
+    });
   });
 
   it('tracks multiple simultaneous connections', async () => {
-    const ws1 = await wsConnect(server);
-    const ws2 = await wsConnect(server);
-    await sleep(40);
-    expect(server.wsConnectionIds.length).toBe(2);
-    ws1.close();
-    ws2.close();
-    await sleep(80);
+    await withServer(nextPort('SERVER_INFO'), {
+      fetch: () => new Response('ok'),
+      websocket: { message() {} }
+    }, async (s) => {
+      const ws1 = await wsConnect(s);
+      const ws2 = await wsConnect(s);
+      await sleep(40);
+      expect(s.wsConnectionIds.length).toBe(2);
+      await closeWs(ws1);
+      await closeWs(ws2);
+      await sleep(50);
+    });
   });
 });
 

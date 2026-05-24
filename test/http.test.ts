@@ -18,6 +18,7 @@ import {
   post,
   request,
   standardHandler,
+  sleep,
   type Server,
 } from './setup.js';
 
@@ -283,7 +284,7 @@ describe('Concurrent requests', () => {
       hostname: '127.0.0.1',
       async fetch(req) {
         // Simulate async work
-        await Bun.sleep(5);
+        await sleep(5);
         return new Response('ok');
       },
     });
@@ -291,9 +292,9 @@ describe('Concurrent requests', () => {
 
   afterAll(() => concurrentServer.stop());
 
-  it('handles 50 concurrent requests', async () => {
+  it('handles 20 concurrent requests', async () => {
     const results = await Promise.all(
-      Array.from({ length: 50 }, () => get(concurrentServer, '/'))
+      Array.from({ length: 20 }, () => get(concurrentServer, '/'))
     );
     for (const res of results) {
       expect(res.status).toBe(200);

@@ -162,7 +162,8 @@ pub async fn handle_ws_connection(
         }
     });
 
-    let _ = tokio::join!(send_task, recv_task);
+    let _ = recv_task.await;
+    send_task.abort();
 
     {
         let mut map = senders_recv.lock().unwrap();
