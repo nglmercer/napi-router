@@ -39,12 +39,14 @@
     "README.md",
     "LICENSE"
   ],
-  "scripts": {
-    "build": "napi build --platform --release",
-    "build:debug": "napi build --platform",
+"scripts": {
+    "build": "napi build --platform --release && node scripts/postbuild.js",
+    "build:debug": "napi build --platform && node scripts/postbuild.js",
     "clean": "napi clean && cargo clean",
     "test": "bun test",
     "dev": "node --watch examples/dev.ts",
+    "bench": "bun bench/compare.ts",
+    "bench:simple": "bun bench/server.ts",
     "type-check": "tsc --noEmit",
     "format": "prettier --write index.js index.d.ts adapter/ examples/",
     "lint": "rustup run stable cargo clippy -- -D warnings"
