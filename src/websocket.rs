@@ -51,15 +51,6 @@ pub fn build_ws_upgrade_response(key: &str) -> Response<Full<Bytes>> {
         .unwrap()
 }
 
-pub fn generate_connection_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("ws_{}", ts)
-}
-
 pub async fn handle_ws_connection(
     upgraded: TokioIo<hyper::upgrade::Upgraded>,
     connection_id: String,
