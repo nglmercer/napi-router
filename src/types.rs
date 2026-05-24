@@ -30,13 +30,6 @@ pub struct RequestCall {
 
 #[napi(object)]
 #[derive(Clone, Debug)]
-pub struct RouteMatchResult {
-    pub handler_id: String,
-    pub params: HashMap<String, String>,
-}
-
-#[napi(object)]
-#[derive(Clone, Debug)]
 pub struct WsEvent {
     pub event_type: String,
     pub connection_id: String,

@@ -1,9 +1,12 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::{Request, Response};
-use http_body_util::Full;
-use bytes::Bytes;
+use hyper_util::rt::TokioIo;
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use napi::{Status, Unknown};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -13,7 +16,7 @@ use tokio_tungstenite::tungstenite;
 use crate::types::WsEvent;
 
 pub type WsSenders = Arc<Mutex<HashMap<String, mpsc::Sender<tungstenite::Message>>>>;
-pub type WsEventTsfn = Arc<napi::threadsafe_function::ThreadsafeFunction<WsEvent, (), (WsEvent,), napi::Status, false>>;
+pub type WsEventTsfn = Arc<ThreadsafeFunction<WsEvent, Unknown<'static>, WsEvent, Status, false, false, 0>>;
 
 pub fn is_ws_upgrade(req: &Request<Incoming>) -> bool {
     req.headers()
@@ -57,7 +60,7 @@ pub fn generate_connection_id() -> String {
 }
 
 pub async fn handle_ws_connection(
-    upgraded: hyper_util::rt::TokioIo<hyper::upgrade::Upgraded>,
+    upgraded: TokioIo<hyper::upgrade::Upgraded>,
     connection_id: String,
     senders: WsSenders,
     event_tsfn: Option<WsEventTsfn>,
@@ -132,7 +135,7 @@ pub async fn handle_ws_connection(
                             }
                             _ => continue,
                         };
-                        tsfn.call(event, napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking);
+                        tsfn.call(event, ThreadsafeFunctionCallMode::NonBlocking);
                     }
 
                     if is_close {
@@ -150,7 +153,7 @@ pub async fn handle_ws_connection(
                             code: None,
                             reason: None,
                         };
-                        tsfn.call(event, napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking);
+                        tsfn.call(event, ThreadsafeFunctionCallMode::NonBlocking);
                     }
                     break;
                 }
@@ -175,6 +178,6 @@ pub async fn handle_ws_connection(
             code: Some(1000),
             reason: Some("Connection closed".to_string()),
         };
-        tsfn.call(event, napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking);
+        tsfn.call(event, ThreadsafeFunctionCallMode::NonBlocking);
     }
 }
