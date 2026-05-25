@@ -74,7 +74,7 @@ impl HttpServer {
         }
     }
 
-    #[napi(ts_args_type = "callback: (data: { request: RequestData, requestId: number }) => void")]
+    #[napi(ts_args_type = "callback: (data: RequestData, requestId: number) => void")]
     pub fn on_request(&self, callback: RequestTsfn) -> napi::Result<()> {
         *self.inner.on_request.write() = Some(Arc::new(callback));
         Ok(())
@@ -99,7 +99,10 @@ impl HttpServer {
             Ok(l) => l,
             Err(e) => {
                 let err_msg = if e.to_string().contains("Address already in use") {
-                    format!("Port {} is already in use. Please use a different port.", port)
+                    format!(
+                        "Port {} is already in use. Please use a different port.",
+                        port
+                    )
                 } else {
                     format!("Failed to bind to {}:{}: {}", host, port, e)
                 };
@@ -204,8 +207,7 @@ impl HttpServer {
             return;
         }
         let status = u16::from_le_bytes([data[0], data[1]]);
-        let header_size =
-            u32::from_le_bytes([data[2], data[3], data[4], data[5]]) as usize;
+        let header_size = u32::from_le_bytes([data[2], data[3], data[4], data[5]]) as usize;
         if data.len() < 6 + header_size {
             return;
         }
@@ -213,9 +215,12 @@ impl HttpServer {
         if header_data.len() < 4 {
             return;
         }
-        let num_strings =
-            u32::from_le_bytes([header_data[0], header_data[1], header_data[2], header_data[3]])
-                as usize;
+        let num_strings = u32::from_le_bytes([
+            header_data[0],
+            header_data[1],
+            header_data[2],
+            header_data[3],
+        ]) as usize;
         let mut headers = Vec::with_capacity(num_strings);
         let mut pos = 4;
         let mut valid = true;
@@ -380,7 +385,9 @@ impl HttpServer {
         let msg = tokio_tungstenite::tungstenite::Message::Text(message);
 
         let ids: Vec<String> = match self.inner.ws_topics.get(&topic) {
-            Some(entry) => entry.value().iter()
+            Some(entry) => entry
+                .value()
+                .iter()
                 .filter(|id| exclude_id.as_ref().map_or(true, |ex| *id != ex))
                 .cloned()
                 .collect(),
@@ -471,7 +478,13 @@ async fn handle_request(
 
     let (method, url, path, headers, body_bytes) = if is_upgrade {
         let req_ref = req_opt.as_ref().unwrap();
-        (req_ref.method().to_string(), req_ref.uri().to_string(), req_ref.uri().path().to_string(), extract_headers(req_ref.headers()), None)
+        (
+            req_ref.method().to_string(),
+            req_ref.uri().to_string(),
+            req_ref.uri().path().to_string(),
+            extract_headers(req_ref.headers()),
+            None,
+        )
     } else {
         let req = req_opt.take().unwrap();
         let (parts, body) = req.into_parts();
@@ -512,9 +525,19 @@ async fn handle_request(
                         .unwrap());
                 }
             };
-            if body_bytes.is_empty() { None } else { Some(Vec::from(body_bytes)) }
+            if body_bytes.is_empty() {
+                None
+            } else {
+                Some(Vec::from(body_bytes))
+            }
         };
-        (method_str, parts.uri.to_string(), parts.uri.path().to_string(), extract_headers(&parts.headers), body_bytes)
+        (
+            method_str,
+            parts.uri.to_string(),
+            parts.uri.path().to_string(),
+            extract_headers(&parts.headers),
+            body_bytes,
+        )
     };
 
     let request_id = next_request_id();
@@ -680,7 +703,11 @@ fn extract_headers(headers: &HeaderMap) -> Vec<String> {
 async fn create_reusable_listener(addr: SocketAddr) -> std::io::Result<TcpListener> {
     use socket2::{Domain, Protocol, Socket, Type};
 
-    let domain = if addr.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
+    let domain = if addr.is_ipv4() {
+        Domain::IPV4
+    } else {
+        Domain::IPV6
+    };
     let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
 
     socket.set_reuse_address(true)?;

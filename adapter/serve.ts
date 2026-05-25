@@ -526,13 +526,13 @@ export async function serve(options: ServeOptions): Promise<Server> {
   if (websocket) {
     raw.onRequest(async (requestData) => {
       const { requestId } = requestData;
-      const webRequest = toWebRequest(requestData.request, baseUrl);
+      const webRequest = toWebRequest(requestData, baseUrl);
 
       const reqCtx = {
         requestId,
         upgraded: false,
         connectionId: null as string | null,
-        remoteAddr: requestData.request.remoteAddr,
+        remoteAddr: requestData.remoteAddr,
       };
       requestContexts.set(webRequest, reqCtx);
 
@@ -570,7 +570,7 @@ export async function serve(options: ServeOptions): Promise<Server> {
         return;
       }
 
-      const reqHeaders = requestData.request.headers;
+      const reqHeaders = requestData.headers;
       let hasWsUpgrade = false;
       let hasConnUpgrade = false;
       for (let i = 0; i < reqHeaders.length; i += 2) {
@@ -586,7 +586,7 @@ export async function serve(options: ServeOptions): Promise<Server> {
         const connectionId = uniqueId("ws");
         connectionMetas.set(connectionId, {
           data: null,
-          remoteAddress: requestData.request.remoteAddr ?? null,
+          remoteAddress: requestData.remoteAddr ?? null,
         });
         raw.sendResponse(requestId, {
           status: 101,
@@ -602,7 +602,7 @@ export async function serve(options: ServeOptions): Promise<Server> {
   } else {
     raw.onRequest(async (requestData) => {
       const { requestId } = requestData;
-      const webRequest = toWebRequest(requestData.request, baseUrl);
+      const webRequest = toWebRequest(requestData, baseUrl);
 
       let response: Response;
       try {

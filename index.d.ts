@@ -2,7 +2,7 @@
 /* eslint-disable */
 export declare class HttpServer {
   constructor()
-  onRequest(callback: (data: { request: RequestData, requestId: number }) => void): void
+  onRequest(callback: (data: RequestData, requestId: number) => void): void
   onWsEvent(callback: (event: WsEvent) => void): void
   listen(port: number, hostname?: string | undefined | null): Promise<ServerInfo>
   close(closeActiveConnections?: boolean | undefined | null): Promise<void>
