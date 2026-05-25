@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -25,18 +25,22 @@ type RequestTsfn =
 type WsEventTsfn = ThreadsafeFunction<WsEvent, Unknown<'static>, WsEvent, Status, false, false, 0>;
 
 struct ServerInner {
-    on_request: Mutex<Option<Arc<RequestTsfn>>>,
-    on_ws_event: Mutex<Option<Arc<WsEventTsfn>>>,
+    on_request: RwLock<Option<Arc<RequestTsfn>>>,
+    on_ws_event: RwLock<Option<Arc<WsEventTsfn>>>,
     pending: DashMap<u32, oneshot::Sender<ResponseData>>,
     ws_senders: websocket::WsSenders,
     ws_subscriptions: DashMap<String, HashSet<String>>,
     ws_topics: DashMap<String, HashSet<String>>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     accept_task: Mutex<Option<JoinHandle<()>>>,
-    conn_abort_handles: Mutex<Vec<AbortHandle>>,
+    conn_counter: AtomicU64,
+    conn_abort_handles: DashMap<u64, AbortHandle>,
 }
 
 type Mutex<T> = parking_lot::Mutex<T>;
+type RwLock<T> = parking_lot::RwLock<T>;
+
+const MAX_BODY_SIZE: usize = 10 * 1024 * 1024; // 10 MB
 
 #[napi]
 pub struct HttpServer {
@@ -56,30 +60,29 @@ impl HttpServer {
         const PENDING_SHARDS: usize = 16;
         HttpServer {
             inner: Arc::new(ServerInner {
-                on_request: parking_lot::Mutex::new(None),
-                on_ws_event: parking_lot::Mutex::new(None),
+                on_request: RwLock::new(None),
+                on_ws_event: RwLock::new(None),
                 pending: DashMap::with_capacity_and_shard_amount(1024, PENDING_SHARDS),
                 ws_senders: Arc::new(DashMap::new()),
                 ws_subscriptions: DashMap::new(),
                 ws_topics: DashMap::new(),
                 shutdown_tx: parking_lot::Mutex::new(None),
                 accept_task: parking_lot::Mutex::new(None),
-                conn_abort_handles: parking_lot::Mutex::new(Vec::new()),
+                conn_counter: AtomicU64::new(1),
+                conn_abort_handles: DashMap::new(),
             }),
         }
     }
 
     #[napi(ts_args_type = "callback: (data: { request: RequestData, requestId: number }) => void")]
     pub fn on_request(&self, callback: RequestTsfn) -> napi::Result<()> {
-        let mut guard = self.inner.on_request.lock();
-
-        *guard = Some(Arc::new(callback));
+        *self.inner.on_request.write() = Some(Arc::new(callback));
         Ok(())
     }
 
     #[napi(ts_args_type = "callback: (event: WsEvent) => void")]
     pub fn on_ws_event(&self, callback: WsEventTsfn) -> Result<()> {
-        *self.inner.on_ws_event.lock() = Some(Arc::new(callback));
+        *self.inner.on_ws_event.write() = Some(Arc::new(callback));
         Ok(())
     }
 
@@ -134,19 +137,14 @@ impl HttpServer {
         }
 
         if close_active_connections.unwrap_or(false) {
-            let handles = self
-                .inner
-                .conn_abort_handles
-                .lock()
-                .drain(..)
-                .collect::<Vec<_>>();
-            for h in handles {
-                h.abort();
+            for entry in self.inner.conn_abort_handles.iter() {
+                entry.value().abort();
             }
+            self.inner.conn_abort_handles.clear();
         }
 
-        *self.inner.on_request.lock() = None;
-        *self.inner.on_ws_event.lock() = None;
+        *self.inner.on_request.write() = None;
+        *self.inner.on_ws_event.write() = None;
         self.inner.pending.clear();
     }
 
@@ -379,17 +377,21 @@ impl HttpServer {
     }
 
     fn publish_internal(&self, exclude_id: Option<String>, topic: String, message: String) -> u32 {
-        let mut sent_count = 0;
         let msg = tokio_tungstenite::tungstenite::Message::Text(message);
 
-        if let Some(entry) = self.inner.ws_topics.get(&topic) {
-            for id in entry.value().iter() {
-                if Some(id) != exclude_id.as_ref() {
-                    if let Some(tx) = self.inner.ws_senders.get(id).map(|e| e.value().clone()) {
-                        if tx.try_send(msg.clone()).is_ok() {
-                            sent_count += 1;
-                        }
-                    }
+        let ids: Vec<String> = match self.inner.ws_topics.get(&topic) {
+            Some(entry) => entry.value().iter()
+                .filter(|id| exclude_id.as_ref().map_or(true, |ex| *id != ex))
+                .cloned()
+                .collect(),
+            None => return 0,
+        };
+
+        let mut sent_count = 0;
+        for id in &ids {
+            if let Some(tx) = self.inner.ws_senders.get(id).map(|e| e.value().clone()) {
+                if tx.try_send(msg.clone()).is_ok() {
+                    sent_count += 1;
                 }
             }
         }
@@ -409,10 +411,13 @@ async fn accept_loop(
                     Ok((stream, peer)) => {
                         let remote = peer.to_string();
                         let state_for_spawn = state.clone();
+                        let conn_id = state.conn_counter.fetch_add(1, Ordering::Relaxed);
+                        let cleanup_state = state.clone();
                         let handle = tokio::spawn(async move {
                             handle_connection(stream, state_for_spawn, remote).await;
+                            cleanup_state.conn_abort_handles.remove(&conn_id);
                         });
-                        state.conn_abort_handles.lock().push(handle.abort_handle());
+                        state.conn_abort_handles.insert(conn_id, handle.abort_handle());
                     }
                     Err(e) => {
                         eprintln!("accept error: {}", e);
@@ -447,7 +452,12 @@ async fn handle_connection(
         .max_headers(200);
     builder.http2().max_concurrent_streams(256);
     if let Err(e) = builder.serve_connection_with_upgrades(io, svc).await {
-        eprintln!("connection error: {}", e);
+        let is_expected_close = e
+            .downcast_ref::<hyper::Error>()
+            .is_some_and(|h| h.is_closed() || h.is_canceled());
+        if !is_expected_close {
+            eprintln!("connection error: {}", e);
+        }
     }
 }
 
@@ -472,8 +482,29 @@ async fn handle_request(
         let body_bytes = if is_get_head {
             None
         } else {
+            if let Some(cl) = parts.headers.get("content-length") {
+                if let Ok(len_str) = cl.to_str() {
+                    if let Ok(len) = len_str.parse::<usize>() {
+                        if len > MAX_BODY_SIZE {
+                            return Ok(Response::builder()
+                                .status(StatusCode::PAYLOAD_TOO_LARGE)
+                                .body(Full::new(Bytes::from("Request body too large")))
+                                .unwrap());
+                        }
+                    }
+                }
+            }
             let body_bytes = match body.collect().await {
-                Ok(collected) => collected.to_bytes(),
+                Ok(collected) => {
+                    let bytes = collected.to_bytes();
+                    if bytes.len() > MAX_BODY_SIZE {
+                        return Ok(Response::builder()
+                            .status(StatusCode::PAYLOAD_TOO_LARGE)
+                            .body(Full::new(Bytes::from("Request body too large")))
+                            .unwrap());
+                    }
+                    bytes
+                }
                 Err(e) => {
                     return Ok(Response::builder()
                         .status(StatusCode::BAD_REQUEST)
@@ -501,7 +532,7 @@ async fn handle_request(
     let (tx, rx) = oneshot::channel::<ResponseData>();
     state.pending.insert(request_id, tx);
 
-    let tsfn = state.on_request.lock().as_ref().map(Arc::clone);
+    let tsfn = state.on_request.read().as_ref().map(Arc::clone);
 
     if let Some(tsfn) = tsfn {
         if tsfn.call(request_data, ThreadsafeFunctionCallMode::NonBlocking) != Status::Ok {
@@ -576,7 +607,7 @@ async fn handle_ws_upgrade(
         }
     }
 
-    let event_tsfn = state.on_ws_event.lock().as_ref().map(Arc::clone);
+    let event_tsfn = state.on_ws_event.read().as_ref().map(Arc::clone);
 
     let senders = state.ws_senders.clone();
 
@@ -633,15 +664,15 @@ async fn handle_ws_upgrade(
 }
 
 fn next_request_id() -> u32 {
-    static COUNTER: AtomicU32 = AtomicU32::new(1);
-    COUNTER.fetch_add(1, Ordering::Relaxed)
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    COUNTER.fetch_add(1, Ordering::Relaxed) as u32
 }
 
 fn extract_headers(headers: &HeaderMap) -> Vec<String> {
     let mut v = Vec::with_capacity(headers.len() * 2);
     for (k, val) in headers.iter() {
         v.push(k.as_str().to_string());
-        v.push(val.to_str().unwrap_or("").to_string());
+        v.push(String::from_utf8_lossy(val.as_bytes()).into_owned());
     }
     v
 }
