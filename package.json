@@ -13,10 +13,10 @@
     "bun",
     "hono"
   ],
-  "homepage": "https://github.com/your-username/your-repo#readme",
+  "homepage": "https://github.com/nglmercer/napi-router#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/your-username/your-repo.git"
+    "url": "git+https://github.com/nglmercer/napi-router.git"
   },
   "license": "MIT",
   "type": "module",
