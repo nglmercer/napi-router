@@ -1,4 +1,4 @@
-import { HttpServer } from "../index.js";
+import { HttpServer, RequestData } from "../index.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -272,22 +272,8 @@ export class Server {
 // ---------------------------------------------------------------------------
 
 /** Matches the flat RequestData shape actually emitted by the NAPI layer. */
-interface RawRequestData {
-  url: string;
-  path: string;
-  method: string;
-  headers: string[];
-  /**
-   * With `Buffer` on the Rust side, NAPI-RS delivers body as a `Uint8Array`
-   * (zero-copy external buffer).  A `number[]` path is kept as a safety net
-   * for any legacy / compatibility scenario.
-   */
-  body?: Uint8Array | number[] | null;
-  remoteAddr: string;
-  requestId: number;
-}
 
-function toWebRequest(data: RawRequestData, baseUrl: string): Request {
+function toWebRequest(data: RequestData, baseUrl: string): Request {
   const url = data.url[0] === "/" ? `${baseUrl}${data.url}` : data.url;
 
   const h = data.headers;
@@ -332,7 +318,9 @@ function encodeResponseBuffer(
   }
 
   const bodyBytes = body
-    ? (body instanceof Uint8Array ? body : new Uint8Array(body as ArrayBuffer))
+    ? body instanceof Uint8Array
+      ? body
+      : new Uint8Array(body as ArrayBuffer)
     : null;
   const bodySize = bodyBytes?.byteLength ?? 0;
   const totalSize = 2 + 4 + headerSectionSize + bodySize;
@@ -340,13 +328,18 @@ function encodeResponseBuffer(
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
 
   let offset = 0;
-  view.setUint16(offset, status, true); offset += 2;
-  view.setUint32(offset, headerSectionSize, true); offset += 4;
+  view.setUint16(offset, status, true);
+  offset += 2;
+  view.setUint32(offset, headerSectionSize, true);
+  offset += 4;
 
-  view.setUint32(offset, headers.length, true); offset += 4;
+  view.setUint32(offset, headers.length, true);
+  offset += 4;
   for (const bytes of encodedHeaders) {
-    view.setUint32(offset, bytes.byteLength, true); offset += 4;
-    buf.set(bytes, offset); offset += bytes.byteLength;
+    view.setUint32(offset, bytes.byteLength, true);
+    offset += 4;
+    buf.set(bytes, offset);
+    offset += bytes.byteLength;
   }
 
   if (bodyBytes) {
@@ -358,8 +351,8 @@ function encodeResponseBuffer(
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function sendResponseFast(
-  raw: any,
-  requestId: unknown,
+  raw: HttpServer,
+  requestId: number | string,
   response: Response & { _rawBody?: string | Uint8Array | ArrayBuffer },
 ): void {
   const headers: string[] = [];
@@ -371,23 +364,23 @@ function sendResponseFast(
   if (typeof rawBody === "string") {
     const body = new TextEncoder().encode(rawBody);
     const buf = encodeResponseBuffer(response.status, headers, body);
-    raw.sendResponseRaw(requestId, buf);
+    raw.sendResponseRaw(Number(requestId), buf);
     return;
   }
   if (rawBody instanceof Uint8Array || rawBody instanceof ArrayBuffer) {
     const buf = encodeResponseBuffer(response.status, headers, rawBody);
-    raw.sendResponseRaw(requestId, buf);
+    raw.sendResponseRaw(Number(requestId), buf);
     return;
   }
 
   response.arrayBuffer().then(
     (buf) => {
       const encoded = encodeResponseBuffer(response.status, headers, buf);
-      raw.sendResponseRaw(requestId, encoded);
+      raw.sendResponseRaw(Number(requestId), encoded);
     },
     () => {
       const encoded = encodeResponseBuffer(response.status, headers, null);
-      raw.sendResponseRaw(requestId, encoded);
+      raw.sendResponseRaw(Number(requestId), encoded);
     },
   );
 }
@@ -446,57 +439,46 @@ function makeWsProxy(connectionId: string, raw: any): ServerWebSocket {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wireWebSocket(
-  raw: any,
+  raw: HttpServer,
   wsHandlers: WebSocketHandlers | undefined,
 ): void {
   if (!wsHandlers) return;
 
-  raw.onWsEvent(
-    (event: {
-      connectionId: string;
-      eventType: "open" | "message" | "close" | "error" | "disconnect";
-      remoteAddr?: string;
-      text?: string;
-      binary?: number[];
-      code?: number;
-      reason?: string;
-      error?: string;
-    }) => {
-      const ws = makeWsProxy(event.connectionId, raw);
+  raw.onWsEvent((event) => {
+    const ws = makeWsProxy(event.connectionId, raw);
 
-      switch (event.eventType) {
-        case "open":
-          if (event.remoteAddr) {
-            const meta = connectionMetas.get(event.connectionId);
-            if (meta) meta.remoteAddress = event.remoteAddr;
-          }
-          wsHandlers.open?.(ws);
-          break;
+    switch (event.eventType) {
+      case "open":
+        if (event.remoteAddr) {
+          const meta = connectionMetas.get(event.connectionId);
+          if (meta) meta.remoteAddress = event.remoteAddr;
+        }
+        wsHandlers.open?.(ws);
+        break;
 
-        case "message":
-          if (event.text != null) {
-            wsHandlers.message?.(ws, event.text);
-          } else if (event.binary != null) {
-            wsHandlers.message?.(ws, new Uint8Array(event.binary));
-          }
-          break;
+      case "message":
+        if (event.text != null) {
+          wsHandlers.message?.(ws, event.text);
+        } else if (event.binary != null) {
+          wsHandlers.message?.(ws, new Uint8Array(event.binary));
+        }
+        break;
 
-        case "close":
-          connectionMetas.delete(event.connectionId);
-          wsHandlers.close?.(ws, event.code ?? 1000, event.reason ?? "");
-          break;
+      case "close":
+        connectionMetas.delete(event.connectionId);
+        wsHandlers.close?.(ws, event.code ?? 1000, event.reason ?? "");
+        break;
 
-        case "error":
-          wsHandlers.error?.(ws, new Error(event.error ?? "WebSocket error"));
-          break;
+      case "error":
+        wsHandlers.error?.(ws, new Error(event.error ?? "WebSocket error"));
+        break;
 
-        case "disconnect":
-          connectionMetas.delete(event.connectionId);
-          wsHandlers.close?.(ws, event.code ?? 1000, event.reason ?? "");
-          break;
-      }
-    },
-  );
+      case "disconnect":
+        connectionMetas.delete(event.connectionId);
+        wsHandlers.close?.(ws, event.code ?? 1000, event.reason ?? "");
+        break;
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -534,7 +516,7 @@ export async function serve(options: ServeOptions): Promise<Server> {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const raw: any = new HttpServer();
+  const raw: HttpServer = new HttpServer();
   let handle: Server | null = null;
 
   wireWebSocket(raw, websocket);
@@ -542,15 +524,15 @@ export async function serve(options: ServeOptions): Promise<Server> {
   const baseUrl = `http://${hostname}:${port}`;
 
   if (websocket) {
-    raw.onRequest(async (requestData: RawRequestData) => {
+    raw.onRequest(async (requestData) => {
       const { requestId } = requestData;
-      const webRequest = toWebRequest(requestData, baseUrl);
+      const webRequest = toWebRequest(requestData.request, baseUrl);
 
       const reqCtx = {
         requestId,
         upgraded: false,
         connectionId: null as string | null,
-        remoteAddr: requestData.remoteAddr,
+        remoteAddr: requestData.request.remoteAddr,
       };
       requestContexts.set(webRequest, reqCtx);
 
@@ -588,7 +570,7 @@ export async function serve(options: ServeOptions): Promise<Server> {
         return;
       }
 
-      const reqHeaders = requestData.headers;
+      const reqHeaders = requestData.request.headers;
       let hasWsUpgrade = false;
       let hasConnUpgrade = false;
       for (let i = 0; i < reqHeaders.length; i += 2) {
@@ -604,7 +586,7 @@ export async function serve(options: ServeOptions): Promise<Server> {
         const connectionId = uniqueId("ws");
         connectionMetas.set(connectionId, {
           data: null,
-          remoteAddress: requestData.remoteAddr ?? null,
+          remoteAddress: requestData.request.remoteAddr ?? null,
         });
         raw.sendResponse(requestId, {
           status: 101,
@@ -618,9 +600,9 @@ export async function serve(options: ServeOptions): Promise<Server> {
       sendResponseFast(raw, requestId, response);
     });
   } else {
-    raw.onRequest(async (requestData: RawRequestData) => {
+    raw.onRequest(async (requestData) => {
       const { requestId } = requestData;
-      const webRequest = toWebRequest(requestData, baseUrl);
+      const webRequest = toWebRequest(requestData.request, baseUrl);
 
       let response: Response;
       try {
