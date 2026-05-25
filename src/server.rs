@@ -28,6 +28,7 @@ struct ServerInner {
     on_request: RwLock<Option<Arc<RequestTsfn>>>,
     on_ws_event: RwLock<Option<Arc<WsEventTsfn>>>,
     pending: DashMap<u32, oneshot::Sender<ResponseData>>,
+    request_addrs: DashMap<u32, String>,
     ws_senders: websocket::WsSenders,
     ws_subscriptions: DashMap<String, HashSet<String>>,
     ws_topics: DashMap<String, HashSet<String>>,
@@ -63,6 +64,7 @@ impl HttpServer {
                 on_request: RwLock::new(None),
                 on_ws_event: RwLock::new(None),
                 pending: DashMap::with_capacity_and_shard_amount(1024, PENDING_SHARDS),
+                request_addrs: DashMap::with_capacity_and_shard_amount(1024, PENDING_SHARDS),
                 ws_senders: Arc::new(DashMap::new()),
                 ws_subscriptions: DashMap::new(),
                 ws_topics: DashMap::new(),
@@ -74,7 +76,7 @@ impl HttpServer {
         }
     }
 
-    #[napi(ts_args_type = "callback: (data: RequestData, requestId: number) => void")]
+    #[napi(ts_args_type = "callback: (data: RequestData) => void")]
     pub fn on_request(&self, callback: RequestTsfn) -> napi::Result<()> {
         *self.inner.on_request.write() = Some(Arc::new(callback));
         Ok(())
@@ -149,10 +151,12 @@ impl HttpServer {
         *self.inner.on_request.write() = None;
         *self.inner.on_ws_event.write() = None;
         self.inner.pending.clear();
+        self.inner.request_addrs.clear();
     }
 
     #[napi]
     pub fn send_response(&self, request_id: u32, response: ResponseData) {
+        self.inner.request_addrs.remove(&request_id);
         if let Some((_, tx)) = self.inner.pending.remove(&request_id) {
             let _ = tx.send(response);
         }
@@ -166,6 +170,7 @@ impl HttpServer {
         headers: Vec<String>,
         body: String,
     ) {
+        self.inner.request_addrs.remove(&request_id);
         if let Some((_, tx)) = self.inner.pending.remove(&request_id) {
             let response = ResponseData {
                 status,
@@ -186,6 +191,7 @@ impl HttpServer {
         headers: Vec<String>,
         body: Vec<u8>,
     ) {
+        self.inner.request_addrs.remove(&request_id);
         if let Some((_, tx)) = self.inner.pending.remove(&request_id) {
             let response = ResponseData {
                 status,
@@ -258,6 +264,7 @@ impl HttpServer {
         } else {
             None
         };
+        self.inner.request_addrs.remove(&request_id);
         if let Some((_, tx)) = self.inner.pending.remove(&request_id) {
             let _ = tx.send(ResponseData {
                 status,
@@ -272,6 +279,23 @@ impl HttpServer {
     #[napi]
     pub fn pending_count(&self) -> u32 {
         self.inner.pending.len() as u32
+    }
+
+    #[napi]
+    pub fn request_ip(&self, request_id: u32) -> Option<SocketAddress> {
+        self.inner.request_addrs.get(&request_id).and_then(|addr| {
+            let sock_addr: std::net::SocketAddr = addr.value().parse().ok()?;
+            let family = if sock_addr.is_ipv4() {
+                "IPv4".to_string()
+            } else {
+                "IPv6".to_string()
+            };
+            Some(SocketAddress {
+                address: sock_addr.ip().to_string(),
+                family,
+                port: sock_addr.port(),
+            })
+        })
     }
 
     #[napi]
@@ -552,6 +576,8 @@ async fn handle_request(
         request_id,
     };
 
+    state.request_addrs.insert(request_id, remote_addr.clone());
+
     let (tx, rx) = oneshot::channel::<ResponseData>();
     state.pending.insert(request_id, tx);
 
@@ -562,6 +588,7 @@ async fn handle_request(
             eprintln!("on_request call failed");
         }
     } else {
+        state.request_addrs.remove(&request_id);
         state.pending.remove(&request_id);
         return Ok(Response::builder()
             .status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -572,6 +599,7 @@ async fn handle_request(
     let response_data = match rx.await {
         Ok(r) => r,
         Err(_) => {
+            state.request_addrs.remove(&request_id);
             return Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Full::new(Bytes::from("request cancelled")))

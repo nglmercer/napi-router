@@ -53,6 +53,12 @@ export interface WebSocketHandlers {
   perMessageDeflate?: boolean;
 }
 
+export interface SocketAddress {
+  address: string;
+  family: "IPv4" | "IPv6";
+  port: number;
+}
+
 export interface ServeOptions {
   /** TCP port to listen on. Defaults to 3000. */
   port?: number;
@@ -218,6 +224,13 @@ export class Server {
     return true;
   }
 
+  /** Get the client IP address for a given request (Bun-compatible) */
+  requestIP(req: Request): SocketAddress | null {
+    const ctx = requestContexts.get(req);
+    if (!ctx) return null;
+    return this.#raw.requestIp(ctx.requestId as number) as SocketAddress | null;
+  }
+
   /** Publish a message to all subscribers of a topic */
   publish(
     topic: string,
@@ -364,23 +377,23 @@ function sendResponseFast(
   if (typeof rawBody === "string") {
     const body = new TextEncoder().encode(rawBody);
     const buf = encodeResponseBuffer(response.status, headers, body);
-    raw.sendResponseRaw(Number(requestId), buf);
+    raw.sendResponseRaw(Number(requestId), Buffer.from(buf));
     return;
   }
   if (rawBody instanceof Uint8Array || rawBody instanceof ArrayBuffer) {
     const buf = encodeResponseBuffer(response.status, headers, rawBody);
-    raw.sendResponseRaw(Number(requestId), buf);
+    raw.sendResponseRaw(Number(requestId), Buffer.from(buf));
     return;
   }
 
   response.arrayBuffer().then(
     (buf) => {
       const encoded = encodeResponseBuffer(response.status, headers, buf);
-      raw.sendResponseRaw(Number(requestId), encoded);
+      raw.sendResponseRaw(Number(requestId), Buffer.from(encoded));
     },
     () => {
       const encoded = encodeResponseBuffer(response.status, headers, null);
-      raw.sendResponseRaw(Number(requestId), encoded);
+      raw.sendResponseRaw(Number(requestId), Buffer.from(encoded));
     },
   );
 }

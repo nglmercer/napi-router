@@ -44,3 +44,11 @@ pub struct ServerInfo {
     pub port: u16,
     pub address: String,
 }
+
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct SocketAddress {
+    pub address: String,
+    pub family: String,
+    pub port: u16,
+}

@@ -2,7 +2,7 @@
 /* eslint-disable */
 export declare class HttpServer {
   constructor()
-  onRequest(callback: (data: RequestData, requestId: number) => void): void
+  onRequest(callback: (data: RequestData) => void): void
   onWsEvent(callback: (event: WsEvent) => void): void
   listen(port: number, hostname?: string | undefined | null): Promise<ServerInfo>
   close(closeActiveConnections?: boolean | undefined | null): Promise<void>
@@ -15,6 +15,7 @@ export declare class HttpServer {
    */
   sendResponseRaw(requestId: number, buf: Buffer): void
   pendingCount(): number
+  requestIp(requestId: number): SocketAddress | null
   wsSend(connectionId: string, message: string): number
   wsSendBinary(connectionId: string, data: Array<number>): number
   wsClose(connectionId: string): void
@@ -50,6 +51,12 @@ export interface ResponseData {
 export interface ServerInfo {
   port: number
   address: string
+}
+
+export interface SocketAddress {
+  address: string
+  family: string
+  port: number
 }
 
 export interface WsEvent {
