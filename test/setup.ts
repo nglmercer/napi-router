@@ -19,6 +19,7 @@ export type { Server, ServeOptions, WebSocketHandlers, ServerWebSocket };
 // ---------------------------------------------------------------------------
 
 export const PORT_RANGES = {
+  REQUEST_IP:  { base: 9690, size: 10 },
   HTTP:        { base: 9700, size: 30 },
   SERVER_INFO: { base: 9730, size: 10 },
   ERRORS:      { base: 9740, size: 20 },

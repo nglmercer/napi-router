@@ -617,6 +617,14 @@ export async function serve(options: ServeOptions): Promise<Server> {
       const { requestId } = requestData;
       const webRequest = toWebRequest(requestData, baseUrl);
 
+      const reqCtx = {
+        requestId,
+        upgraded: false,
+        connectionId: null as string | null,
+        remoteAddr: requestData.remoteAddr,
+      };
+      requestContexts.set(webRequest, reqCtx);
+
       let response: Response;
       try {
         const result = await fetchHandler(webRequest, handle!);
