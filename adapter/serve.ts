@@ -242,8 +242,10 @@ export class Server {
     data: number[] | Uint8Array | ArrayBuffer,
   ): void {
     if (data instanceof Uint8Array) {
+      //@ts-ignore
       this.#raw.wsSendBinary(connectionId, data);
     } else if (data instanceof ArrayBuffer) {
+      //@ts-ignore
       this.#raw.wsSendBinary(connectionId, new Uint8Array(data));
     } else {
       this.#raw.wsSendBinary(connectionId, data);

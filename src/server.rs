@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -35,7 +36,7 @@ struct ServerInner {
     conn_abort_handles: Mutex<Vec<AbortHandle>>,
 }
 
-type Mutex<T> = std::sync::Mutex<T>;
+type Mutex<T> = parking_lot::Mutex<T>;
 
 #[napi]
 pub struct HttpServer {
@@ -55,26 +56,22 @@ impl HttpServer {
         const PENDING_SHARDS: usize = 16;
         HttpServer {
             inner: Arc::new(ServerInner {
-                on_request: std::sync::Mutex::new(None),
-                on_ws_event: std::sync::Mutex::new(None),
+                on_request: parking_lot::Mutex::new(None),
+                on_ws_event: parking_lot::Mutex::new(None),
                 pending: DashMap::with_capacity_and_shard_amount(1024, PENDING_SHARDS),
                 ws_senders: Arc::new(DashMap::new()),
                 ws_subscriptions: DashMap::new(),
                 ws_topics: DashMap::new(),
-                shutdown_tx: std::sync::Mutex::new(None),
-                accept_task: std::sync::Mutex::new(None),
-                conn_abort_handles: std::sync::Mutex::new(Vec::new()),
+                shutdown_tx: parking_lot::Mutex::new(None),
+                accept_task: parking_lot::Mutex::new(None),
+                conn_abort_handles: parking_lot::Mutex::new(Vec::new()),
             }),
         }
     }
 
     #[napi(ts_args_type = "callback: (data: { request: RequestData, requestId: number }) => void")]
     pub fn on_request(&self, callback: RequestTsfn) -> napi::Result<()> {
-        let mut guard = self
-            .inner
-            .on_request
-            .lock()
-            .map_err(|_| napi::Error::from_reason("Failed to lock on_request mutex"))?;
+        let mut guard = self.inner.on_request.lock();
 
         *guard = Some(Arc::new(callback));
         Ok(())
@@ -82,20 +79,26 @@ impl HttpServer {
 
     #[napi(ts_args_type = "callback: (event: WsEvent) => void")]
     pub fn on_ws_event(&self, callback: WsEventTsfn) -> Result<()> {
-        *self.inner.on_ws_event.lock().unwrap() = Some(Arc::new(callback));
+        *self.inner.on_ws_event.lock() = Some(Arc::new(callback));
         Ok(())
     }
 
     #[napi]
     pub async fn listen(&self, port: u16, hostname: Option<String>) -> Result<ServerInfo> {
-        let addr = format!("{}:{}", hostname.clone().unwrap_or_else(|| "0.0.0.0".into()), port);
-        let listener = match TcpListener::bind(&addr).await {
+        let host = hostname.clone().unwrap_or_else(|| "0.0.0.0".into());
+        let addr: SocketAddr = match format!("{}:{}", host, port).parse() {
+            Ok(a) => a,
+            Err(e) => {
+                return Err(Error::from_reason(format!("Invalid address: {}", e)));
+            }
+        };
+        let listener = match create_reusable_listener(addr).await {
             Ok(l) => l,
             Err(e) => {
                 let err_msg = if e.to_string().contains("Address already in use") {
                     format!("Port {} is already in use. Please use a different port.", port)
                 } else {
-                    format!("Failed to bind to {}: {}", addr, e)
+                    format!("Failed to bind to {}:{}: {}", host, port, e)
                 };
                 return Err(Error::from_reason(err_msg));
             }
@@ -106,12 +109,12 @@ impl HttpServer {
 
         let state = self.inner.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        *self.inner.shutdown_tx.lock().unwrap() = Some(shutdown_tx);
+        *self.inner.shutdown_tx.lock() = Some(shutdown_tx);
 
         let handle = tokio::spawn(async move {
             accept_loop(listener, state, shutdown_rx).await;
         });
-        *self.inner.accept_task.lock().unwrap() = Some(handle);
+        *self.inner.accept_task.lock() = Some(handle);
 
         Ok(ServerInfo {
             port: local_addr.port(),
@@ -121,10 +124,10 @@ impl HttpServer {
 
     #[napi]
     pub async fn close(&self, close_active_connections: Option<bool>) {
-        if let Some(tx) = self.inner.shutdown_tx.lock().unwrap().take() {
+        if let Some(tx) = self.inner.shutdown_tx.lock().take() {
             let _ = tx.send(());
         }
-        let task = self.inner.accept_task.lock().unwrap().take();
+        let task = self.inner.accept_task.lock().take();
         if let Some(h) = task {
             h.abort();
             let _ = h.await;
@@ -135,7 +138,6 @@ impl HttpServer {
                 .inner
                 .conn_abort_handles
                 .lock()
-                .unwrap()
                 .drain(..)
                 .collect::<Vec<_>>();
             for h in handles {
@@ -143,8 +145,8 @@ impl HttpServer {
             }
         }
 
-        *self.inner.on_request.lock().unwrap() = None;
-        *self.inner.on_ws_event.lock().unwrap() = None;
+        *self.inner.on_request.lock() = None;
+        *self.inner.on_ws_event.lock() = None;
         self.inner.pending.clear();
     }
 
@@ -351,7 +353,7 @@ async fn accept_loop(
                         let handle = tokio::spawn(async move {
                             handle_connection(stream, state_for_spawn, remote).await;
                         });
-                        state.conn_abort_handles.lock().unwrap().push(handle.abort_handle());
+                        state.conn_abort_handles.lock().push(handle.abort_handle());
                     }
                     Err(e) => {
                         eprintln!("accept error: {}", e);
@@ -466,7 +468,7 @@ async fn handle_request(
     state.pending.insert(request_id, tx);
 
     let tsfn = {
-        let lock = state.on_request.lock().unwrap();
+        let lock = state.on_request.lock();
         lock.clone()
     };
 
@@ -544,7 +546,7 @@ async fn handle_ws_upgrade(
     }
 
     let event_tsfn = {
-        let lock = state.on_ws_event.lock().unwrap();
+        let lock = state.on_ws_event.lock();
         lock.clone()
     };
 
@@ -605,4 +607,22 @@ async fn handle_ws_upgrade(
 fn next_request_id() -> u32 {
     static COUNTER: AtomicU32 = AtomicU32::new(1);
     COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+async fn create_reusable_listener(addr: SocketAddr) -> std::io::Result<TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+
+    let domain = if addr.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
+    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+
+    socket.set_reuse_address(true)?;
+    #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
+    socket.set_reuse_port(true)?;
+
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(1024)?;
+
+    let std_listener: std::net::TcpListener = socket.into();
+    TcpListener::from_std(std_listener)
 }
