@@ -7,7 +7,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
+use hyper::{HeaderMap, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use napi::bindgen_prelude::{Buffer, Error, Result};
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -379,27 +379,17 @@ impl HttpServer {
     }
 
     fn publish_internal(&self, exclude_id: Option<String>, topic: String, message: String) -> u32 {
-        let target_ids: Vec<String> = {
-            if let Some(entry) = self.inner.ws_topics.get(&topic) {
-                entry
-                    .value()
-                    .iter()
-                    .filter(|id| Some(*id) != exclude_id.as_ref())
-                    .cloned()
-                    .collect()
-            } else {
-                Vec::new()
-            }
-        };
-
         let mut sent_count = 0;
         let msg = tokio_tungstenite::tungstenite::Message::Text(message);
 
-        for id in target_ids {
-            let tx = self.inner.ws_senders.get(&id).map(|e| e.value().clone());
-            if let Some(tx) = tx {
-                if tx.try_send(msg.clone()).is_ok() {
-                    sent_count += 1;
+        if let Some(entry) = self.inner.ws_topics.get(&topic) {
+            for id in entry.value().iter() {
+                if Some(id) != exclude_id.as_ref() {
+                    if let Some(tx) = self.inner.ws_senders.get(id).map(|e| e.value().clone()) {
+                        if tx.try_send(msg.clone()).is_ok() {
+                            sent_count += 1;
+                        }
+                    }
                 }
             }
         }
@@ -471,18 +461,7 @@ async fn handle_request(
 
     let (method, url, path, headers, body_bytes) = if is_upgrade {
         let req_ref = req_opt.as_ref().unwrap();
-        let method = req_ref.method().to_string();
-        let url = req_ref.uri().to_string();
-        let path = req_ref.uri().path().to_string();
-        let headers: Vec<String> = {
-            let mut v = Vec::with_capacity(req_ref.headers().len() * 2);
-            for (k, val) in req_ref.headers().iter() {
-                v.push(k.as_str().to_string());
-                v.push(val.to_str().unwrap_or("").to_string());
-            }
-            v
-        };
-        (method, url, path, headers, None)
+        (req_ref.method().to_string(), req_ref.uri().to_string(), req_ref.uri().path().to_string(), extract_headers(req_ref.headers()), None)
     } else {
         let req = req_opt.take().unwrap();
         let (parts, body) = req.into_parts();
@@ -502,23 +481,9 @@ async fn handle_request(
                         .unwrap());
                 }
             };
-            if body_bytes.is_empty() {
-                None
-            } else {
-                Some(Vec::from(body_bytes))
-            }
+            if body_bytes.is_empty() { None } else { Some(Vec::from(body_bytes)) }
         };
-        let url = parts.uri.to_string();
-        let path = parts.uri.path().to_string();
-        let headers: Vec<String> = {
-            let mut v = Vec::with_capacity(parts.headers.len() * 2);
-            for (k, val) in parts.headers.iter() {
-                v.push(k.as_str().to_string());
-                v.push(val.to_str().unwrap_or("").to_string());
-            }
-            v
-        };
-        (method_str, url, path, headers, body_bytes)
+        (method_str, parts.uri.to_string(), parts.uri.path().to_string(), extract_headers(&parts.headers), body_bytes)
     };
 
     let request_id = next_request_id();
@@ -670,6 +635,15 @@ async fn handle_ws_upgrade(
 fn next_request_id() -> u32 {
     static COUNTER: AtomicU32 = AtomicU32::new(1);
     COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+fn extract_headers(headers: &HeaderMap) -> Vec<String> {
+    let mut v = Vec::with_capacity(headers.len() * 2);
+    for (k, val) in headers.iter() {
+        v.push(k.as_str().to_string());
+        v.push(val.to_str().unwrap_or("").to_string());
+    }
+    v
 }
 
 async fn create_reusable_listener(addr: SocketAddr) -> std::io::Result<TcpListener> {
