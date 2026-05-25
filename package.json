@@ -51,6 +51,7 @@
     "test": "bun test",
     "dev": "node --watch examples/dev.ts",
     "bench": "bun bench/compare.ts",
+    "build:multi": "bun scripts/build_multiplatform.ts",
     "bench:simple": "bun bench/server.ts",
     "type-check": "tsc --noEmit",
     "format": "prettier --write index.js index.d.ts adapter/**/*.ts examples/",
