@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -29,6 +29,7 @@ struct ServerInner {
     on_ws_event: RwLock<Option<Arc<WsEventTsfn>>>,
     pending: DashMap<u32, oneshot::Sender<ResponseData>>,
     request_addrs: DashMap<u32, String>,
+    upgraded_requests: DashMap<u32, (String, String)>,
     ws_senders: websocket::WsSenders,
     ws_subscriptions: DashMap<String, HashSet<String>>,
     ws_topics: DashMap<String, HashSet<String>>,
@@ -36,6 +37,8 @@ struct ServerInner {
     accept_task: Mutex<Option<JoinHandle<()>>>,
     conn_counter: AtomicU64,
     conn_abort_handles: DashMap<u64, AbortHandle>,
+    listen_port: AtomicU16,
+    listen_addr: RwLock<Option<String>>,
 }
 
 type Mutex<T> = parking_lot::Mutex<T>;
@@ -65,6 +68,7 @@ impl HttpServer {
                 on_ws_event: RwLock::new(None),
                 pending: DashMap::with_capacity_and_shard_amount(1024, PENDING_SHARDS),
                 request_addrs: DashMap::with_capacity_and_shard_amount(1024, PENDING_SHARDS),
+                upgraded_requests: DashMap::new(),
                 ws_senders: Arc::new(DashMap::new()),
                 ws_subscriptions: DashMap::new(),
                 ws_topics: DashMap::new(),
@@ -72,6 +76,8 @@ impl HttpServer {
                 accept_task: parking_lot::Mutex::new(None),
                 conn_counter: AtomicU64::new(1),
                 conn_abort_handles: DashMap::new(),
+                listen_port: AtomicU16::new(0),
+                listen_addr: RwLock::new(None),
             }),
         }
     }
@@ -124,9 +130,14 @@ impl HttpServer {
         });
         *self.inner.accept_task.lock() = Some(handle);
 
+        let actual_port = local_addr.port();
+        let actual_addr = local_addr.ip().to_string();
+        self.inner.listen_port.store(actual_port, Ordering::Relaxed);
+        *self.inner.listen_addr.write() = Some(actual_addr.clone());
+
         Ok(ServerInfo {
-            port: local_addr.port(),
-            address: local_addr.ip().to_string(),
+            port: actual_port,
+            address: actual_addr,
         })
     }
 
@@ -428,6 +439,47 @@ impl HttpServer {
         }
         sent_count
     }
+
+    fn next_id(prefix: &str) -> String {
+        static COUNTER: AtomicU64 = AtomicU64::new(1);
+        format!("{}_{}_{}", prefix, COUNTER.fetch_add(1, Ordering::Relaxed), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis())
+    }
+
+    #[napi(getter)]
+    pub fn port(&self) -> u16 {
+        self.inner.listen_port.load(Ordering::Relaxed)
+    }
+
+    #[napi(getter)]
+    pub fn hostname(&self) -> String {
+        self.inner.listen_addr.read().clone().unwrap_or_else(|| "0.0.0.0".to_string())
+    }
+
+    #[napi(getter)]
+    pub fn url(&self) -> String {
+        let addr = self.inner.listen_addr.read();
+        let port = self.inner.listen_port.load(Ordering::Relaxed);
+        match addr.as_ref() {
+            Some(host) => format!("http://{}:{}/", host, port),
+            None => String::new(),
+        }
+    }
+
+    #[napi]
+    pub fn upgrade(&self, request_id: u32) -> Option<String> {
+        if self.inner.upgraded_requests.contains_key(&request_id) {
+            return None;
+        }
+        let connection_id = Self::next_id("ws");
+        let remote_addr = self.inner.request_addrs.get(&request_id).map(|r| r.value().clone()).unwrap_or_default();
+        self.inner.upgraded_requests.insert(request_id, (connection_id.clone(), remote_addr));
+        Some(connection_id)
+    }
+
+    #[napi]
+    pub async fn stop(&self, close_active_connections: Option<bool>) {
+        self.close(close_active_connections).await;
+    }
 }
 
 async fn accept_loop(
@@ -607,16 +659,16 @@ async fn handle_request(
         }
     };
 
-    if response_data.upgrade.unwrap_or(false) && is_upgrade {
-        if let (Some(req), Some(connection_id)) = (req_opt.take(), response_data.connection_id) {
-            return handle_ws_upgrade(
-                req,
-                state,
-                remote_addr.clone(),
-                connection_id,
-                response_data.headers,
-            )
-            .await;
+    if is_upgrade {
+        if let Some((_, (connection_id, addr))) = state.upgraded_requests.remove(&request_id) {
+            if let Some(req) = req_opt.take() {
+                return handle_ws_upgrade(req, state, addr, connection_id, response_data.headers).await;
+            }
+        }
+        if response_data.upgrade.unwrap_or(false) {
+            if let (Some(req), Some(connection_id)) = (req_opt.take(), response_data.connection_id.clone()) {
+                return handle_ws_upgrade(req, state, remote_addr.clone(), connection_id, response_data.headers).await;
+            }
         }
     }
 

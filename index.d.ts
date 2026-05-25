@@ -26,6 +26,11 @@ export declare class HttpServer {
   wsIsSubscribed(connectionId: string, topic: string): boolean
   wsPublish(connectionId: string, topic: string, message: string): number
   serverPublish(topic: string, message: string): number
+  get port(): number
+  get hostname(): string
+  get url(): string
+  upgrade(requestId: number): string | null
+  stop(closeActiveConnections?: boolean | undefined | null): Promise<void>
 }
 
 export interface RequestData {

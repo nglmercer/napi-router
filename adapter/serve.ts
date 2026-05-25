@@ -1,53 +1,31 @@
 import { HttpServer, RequestData } from "../index.js";
 
-// ---------------------------------------------------------------------------
-// Public interfaces
-// ---------------------------------------------------------------------------
-
 export interface ServerWebSocket {
-  /** Unique connection identifier assigned by napi-router */
   readonly id: string;
-  /** Contextual data attached during upgrade */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   readonly data: any;
-  /** Send a text message */
   send(message: string): number;
-  /** Send binary data */
   send(data: Uint8Array | ArrayBuffer): number;
-  /** Close the connection */
   close(code?: number, reason?: string): void;
-  /** Always 1 (OPEN) while the handler is invoked */
   readonly readyState: number;
-  /** Remote IP address */
   readonly remoteAddress: string;
-
-  /** Subscribe to a pub/sub topic */
   subscribe(topic: string): void;
-  /** Unsubscribe from a pub/sub topic */
   unsubscribe(topic: string): void;
-  /** Publish a message to all subscribers of a topic */
   publish(topic: string, message: string | Uint8Array | ArrayBuffer): void;
-  /** Check if subscribed to a topic */
   isSubscribed(topic: string): boolean;
 }
 
 export interface WebSocketHandlers {
-  /** Called when a new WebSocket connection is established */
   open?(ws: ServerWebSocket): void | Promise<void>;
-  /** Called when a message is received */
   message?(
     ws: ServerWebSocket,
     message: string | Uint8Array,
   ): void | Promise<void>;
-  /** Called when the connection closes */
   close?(
     ws: ServerWebSocket,
     code: number,
     reason: string,
   ): void | Promise<void>;
-  /** Called on a WebSocket error */
   error?(ws: ServerWebSocket, error: Error): void | Promise<void>;
-
   maxPayloadLength?: number;
   idleTimeout?: number;
   perMessageDeflate?: boolean;
@@ -60,85 +38,19 @@ export interface SocketAddress {
 }
 
 export interface ServeOptions {
-  /** TCP port to listen on. Defaults to 3000. */
   port?: number;
-  /** Hostname / IP to bind. Defaults to "0.0.0.0". */
   hostname?: string;
-  /**
-   * Request handler — receives a standard Web API `Request` and must return a
-   * `Response` (or a Promise that resolves to one).
-   * May return `undefined` if `server.upgrade()` was called to handle a
-   * WebSocket upgrade.
-   */
   fetch(
     request: Request,
     server: Server,
   ): Response | Promise<Response> | undefined;
-  /**
-   * WebSocket event handlers. Providing this object enables WebSocket support.
-   */
   websocket?: WebSocketHandlers;
-  /**
-   * Optional error handler called when `fetch` throws.
-   * Must return a `Response`. Falls back to a 500 if omitted.
-   */
   error?(error: Error): Response | Promise<Response>;
 }
 
-// ---------------------------------------------------------------------------
-// FastResponse — zero-copy optimisation
-// ---------------------------------------------------------------------------
-
-const OrigResponse = globalThis.Response;
-
-class FastResponse extends OrigResponse {
-  /** @internal cached raw body for zero-copy sends */
-  _rawBody?: string | Uint8Array | ArrayBuffer;
-
-  constructor(body?: BodyInit | null, init?: ResponseInit) {
-    super(body, init);
-    if (
-      typeof body === "string" ||
-      body instanceof Uint8Array ||
-      body instanceof ArrayBuffer
-    ) {
-      this._rawBody = body as string | Uint8Array | ArrayBuffer;
-    }
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  static override json(data: any, init?: ResponseInit): FastResponse {
-    const body = JSON.stringify(data);
-    const headers = {
-      ...(init?.headers ?? {}),
-      "content-type": "application/json",
-    };
-    const resp = Reflect.construct(
-      OrigResponse,
-      [body, { ...init, headers }],
-      FastResponse,
-    ) as FastResponse;
-    resp._rawBody = body;
-    return resp;
-  }
-}
-
-FastResponse.error = OrigResponse.error;
-FastResponse.redirect = OrigResponse.redirect;
-globalThis.Response = FastResponse as unknown as typeof Response;
-
-// ---------------------------------------------------------------------------
-// Internal state
-// ---------------------------------------------------------------------------
-
 const requestContexts = new WeakMap<
   Request,
-  {
-    requestId: unknown;
-    upgraded: boolean;
-    connectionId: string | null;
-    remoteAddr?: string;
-  }
+  { requestId: number; remoteAddr?: string }
 >();
 
 const connectionMetas = new Map<
@@ -146,92 +58,60 @@ const connectionMetas = new Map<
   { data: unknown; remoteAddress: string | null }
 >();
 
-let nextId = 1;
-function uniqueId(prefix = "c"): string {
-  return `${prefix}_${nextId++}_${Date.now()}`;
-}
-
-// ---------------------------------------------------------------------------
-// Server handle (public class)
-// ---------------------------------------------------------------------------
-
 export class Server {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   #raw: HttpServer;
-  #port: number;
-  #hostname: string;
-  #stopped = false;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  constructor(raw: HttpServer, port: number, hostname: string) {
+  constructor(raw: HttpServer) {
     this.#raw = raw;
-    this.#port = port;
-    this.#hostname = hostname;
   }
 
-  /** Bound port */
   get port(): number {
-    return this.#port;
+    return this.#raw.port as number;
   }
 
-  /** Bound hostname / IP */
   get hostname(): string {
-    return this.#hostname;
+    return this.#raw.hostname as string;
   }
 
-  /** Convenience URL string, e.g. "http://0.0.0.0:3000/" */
   get url(): string {
-    return `http://${this.#hostname}:${this.#port}/`;
+    return this.#raw.url as string;
   }
 
-  /** Number of in-flight requests awaiting a fetch-handler response */
   get pendingRequests(): number {
     return this.#raw.pendingCount() as number;
   }
 
-  /** Number of open WebSocket connections */
   get pendingWebSockets(): number {
     return this.#raw.wsConnectionCount() as number;
   }
 
-  /** Stop the server. Safe to call multiple times. */
   async stop(closeActiveConnections = false): Promise<void> {
-    if (this.#stopped) return;
-    this.#stopped = true;
-    await this.#raw.close(closeActiveConnections).catch(() => {});
+    await this.#raw.stop(closeActiveConnections);
   }
 
-  /**
-   * Upgrade the request to a WebSocket connection.
-   * Call inside `fetch` when you detect an upgrade request.
-   */
   upgrade(
     req: Request,
     options: { headers?: HeadersInit; data?: unknown } = {},
   ): boolean {
     const ctx = requestContexts.get(req);
-    if (!ctx || ctx.upgraded) return false;
+    if (!ctx) return false;
 
-    const connectionId = uniqueId("ws");
-    ctx.upgraded = true;
-    ctx.connectionId = connectionId;
+    const connId = this.#raw.upgrade(ctx.requestId);
+    if (connId == null) return false;
 
-    connectionMetas.set(connectionId, {
+    connectionMetas.set(connId, {
       data: options.data ?? null,
       remoteAddress: ctx.remoteAddr ?? null,
     });
-
     return true;
   }
 
-  /** Get the client IP address for a given request (Bun-compatible) */
   requestIP(req: Request): SocketAddress | null {
     const ctx = requestContexts.get(req);
     if (!ctx) return null;
-    return this.#raw.requestIp(ctx.requestId as number) as SocketAddress | null;
+    return this.#raw.requestIp(ctx.requestId) as SocketAddress | null;
   }
 
-  /** Publish a message to all subscribers of a topic */
   publish(
     topic: string,
     data: string | ArrayBufferView | ArrayBuffer,
@@ -244,33 +124,27 @@ export class Server {
     return this.#raw.serverPublish(topic, message) as number;
   }
 
-  /** Send a text message to a specific WebSocket connection */
   sendToWs(connectionId: string, message: string): void {
     this.#raw.wsSend(connectionId, message);
   }
 
-  /** Send binary data to a specific WebSocket connection */
   sendBinaryToWs(
     connectionId: string,
     data: number[] | Uint8Array | ArrayBuffer,
   ): void {
     if (data instanceof Uint8Array) {
-      //@ts-ignore
-      this.#raw.wsSendBinary(connectionId, data);
+      this.#raw.wsSendBinary(connectionId, Array.from(data));
     } else if (data instanceof ArrayBuffer) {
-      //@ts-ignore
-      this.#raw.wsSendBinary(connectionId, new Uint8Array(data));
+      this.#raw.wsSendBinary(connectionId, Array.from(new Uint8Array(data)));
     } else {
       this.#raw.wsSendBinary(connectionId, data);
     }
   }
 
-  /** Close a specific WebSocket connection */
   closeWs(connectionId: string): void {
     this.#raw.wsClose(connectionId);
   }
 
-  /** All currently open WebSocket connection IDs */
   get wsConnectionIds(): string[] {
     return this.#raw.wsConnectionIds() as string[];
   }
@@ -279,12 +153,6 @@ export class Server {
     return "Server";
   }
 }
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-/** Matches the flat RequestData shape actually emitted by the NAPI layer. */
 
 function toWebRequest(data: RequestData, baseUrl: string): Request {
   const url = data.url[0] === "/" ? `${baseUrl}${data.url}` : data.url;
@@ -301,7 +169,6 @@ function toWebRequest(data: RequestData, baseUrl: string): Request {
   };
 
   if (data.body != null && data.method !== "GET" && data.method !== "HEAD") {
-    // Uint8Array arrives zero-copy from the Rust Buffer; number[] is a legacy fallback.
     const bodyBytes =
       data.body instanceof Uint8Array
         ? data.body
@@ -316,89 +183,6 @@ function toWebRequest(data: RequestData, baseUrl: string): Request {
   return new Request(url, init);
 }
 
-function encodeResponseBuffer(
-  status: number,
-  headers: string[],
-  body?: Uint8Array | ArrayBuffer | null,
-): Uint8Array {
-  const encoder = new TextEncoder();
-  const encodedHeaders: Uint8Array[] = [];
-  let headerSectionSize = 4;
-  for (const h of headers) {
-    const bytes = encoder.encode(h);
-    encodedHeaders.push(bytes);
-    headerSectionSize += 4 + bytes.byteLength;
-  }
-
-  const bodyBytes = body
-    ? body instanceof Uint8Array
-      ? body
-      : new Uint8Array(body as ArrayBuffer)
-    : null;
-  const bodySize = bodyBytes?.byteLength ?? 0;
-  const totalSize = 2 + 4 + headerSectionSize + bodySize;
-  const buf = new Uint8Array(totalSize);
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-
-  let offset = 0;
-  view.setUint16(offset, status, true);
-  offset += 2;
-  view.setUint32(offset, headerSectionSize, true);
-  offset += 4;
-
-  view.setUint32(offset, headers.length, true);
-  offset += 4;
-  for (const bytes of encodedHeaders) {
-    view.setUint32(offset, bytes.byteLength, true);
-    offset += 4;
-    buf.set(bytes, offset);
-    offset += bytes.byteLength;
-  }
-
-  if (bodyBytes) {
-    buf.set(bodyBytes, offset);
-  }
-
-  return buf;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function sendResponseFast(
-  raw: HttpServer,
-  requestId: number | string,
-  response: Response & { _rawBody?: string | Uint8Array | ArrayBuffer },
-): void {
-  const headers: string[] = [];
-  response.headers.forEach((value, key) => {
-    headers.push(key, value);
-  });
-
-  const rawBody = response._rawBody;
-  if (typeof rawBody === "string") {
-    const body = new TextEncoder().encode(rawBody);
-    const buf = encodeResponseBuffer(response.status, headers, body);
-    raw.sendResponseRaw(Number(requestId), Buffer.from(buf));
-    return;
-  }
-  if (rawBody instanceof Uint8Array || rawBody instanceof ArrayBuffer) {
-    const buf = encodeResponseBuffer(response.status, headers, rawBody);
-    raw.sendResponseRaw(Number(requestId), Buffer.from(buf));
-    return;
-  }
-
-  response.arrayBuffer().then(
-    (buf) => {
-      const encoded = encodeResponseBuffer(response.status, headers, buf);
-      raw.sendResponseRaw(Number(requestId), Buffer.from(encoded));
-    },
-    () => {
-      const encoded = encodeResponseBuffer(response.status, headers, null);
-      raw.sendResponseRaw(Number(requestId), Buffer.from(encoded));
-    },
-  );
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeWsProxy(connectionId: string, raw: any): ServerWebSocket {
   const getMeta = () =>
     connectionMetas.get(connectionId) ?? { data: null, remoteAddress: null };
@@ -450,7 +234,6 @@ function makeWsProxy(connectionId: string, raw: any): ServerWebSocket {
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wireWebSocket(
   raw: HttpServer,
   wsHandlers: WebSocketHandlers | undefined,
@@ -494,27 +277,6 @@ function wireWebSocket(
   });
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/**
- * Start an HTTP server with a Bun-compatible `serve()` API.
- * Works in Node.js, Bun, and Deno.
- *
- * @example
- * ```ts
- * import { serve } from 'napi-router/adapter';
- *
- * const server = await serve({
- *   port: 3000,
- *   fetch(req) {
- *     return new Response('Hello!');
- *   },
- * });
- * console.log(`Listening on ${server.url}`);
- * ```
- */
 export async function serve(options: ServeOptions): Promise<Server> {
   const {
     port = 3000,
@@ -528,61 +290,49 @@ export async function serve(options: ServeOptions): Promise<Server> {
     throw new TypeError("serve(): options.fetch must be a function");
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const raw: HttpServer = new HttpServer();
-  let handle: Server | null = null;
-
+  const server = new Server(raw);
   wireWebSocket(raw, websocket);
-
   const baseUrl = `http://${hostname}:${port}`;
 
-  if (websocket) {
-    raw.onRequest(async (requestData) => {
-      const { requestId } = requestData;
-      const webRequest = toWebRequest(requestData, baseUrl);
+  raw.onRequest(async (requestData) => {
+    const { requestId } = requestData;
+    const webRequest = toWebRequest(requestData, baseUrl);
+    requestContexts.set(webRequest, {
+      requestId,
+      remoteAddr: requestData.remoteAddr,
+    });
 
-      const reqCtx = {
-        requestId,
-        upgraded: false,
-        connectionId: null as string | null,
-        remoteAddr: requestData.remoteAddr,
-      };
-      requestContexts.set(webRequest, reqCtx);
-
-      let response: Response;
-      try {
-        const result = await fetchHandler(webRequest, handle!);
-        if (!(result instanceof Response)) {
-          response = new Response(
-            "Internal Server Error: fetch handler must return a Response",
-            { status: 500 },
-          );
-        } else {
-          response = result;
-        }
-      } catch (err) {
-        if (typeof errorHandler === "function") {
-          try {
-            response = await errorHandler(err as Error);
-          } catch {
-            response = new Response("Internal Server Error", { status: 500 });
-          }
-        } else {
-          console.error("[napi-router] Unhandled error in fetch handler:", err);
+    let response: Response;
+    try {
+      const result = await fetchHandler(webRequest, server);
+      if (!(result instanceof Response)) {
+        response = new Response(
+          "Internal Server Error: fetch handler must return a Response",
+          { status: 500 },
+        );
+      } else {
+        response = result;
+      }
+    } catch (err) {
+      if (typeof errorHandler === "function") {
+        try {
+          response = await errorHandler(err as Error);
+        } catch {
           response = new Response("Internal Server Error", { status: 500 });
         }
+      } else {
+        console.error("[napi-router] Unhandled error in fetch handler:", err);
+        response = new Response("Internal Server Error", { status: 500 });
       }
+    }
 
-      if (reqCtx.upgraded && reqCtx.connectionId) {
-        raw.sendResponse(requestId, {
-          status: 101,
-          headers: [],
-          upgrade: true,
-          connectionId: reqCtx.connectionId,
-        });
-        return;
-      }
+    const headers: string[] = [];
+    response.headers.forEach((value, key) => {
+      headers.push(key, value);
+    });
 
+    if (websocket) {
       const reqHeaders = requestData.headers;
       let hasWsUpgrade = false;
       let hasConnUpgrade = false;
@@ -596,78 +346,36 @@ export async function serve(options: ServeOptions): Promise<Server> {
       }
 
       if (hasWsUpgrade && hasConnUpgrade) {
-        const connectionId = uniqueId("ws");
-        connectionMetas.set(connectionId, {
-          data: null,
-          remoteAddress: requestData.remoteAddr ?? null,
-        });
-        raw.sendResponse(requestId, {
-          status: 101,
-          headers: [],
-          upgrade: true,
-          connectionId,
-        });
-        return;
-      }
-
-      sendResponseFast(raw, requestId, response);
-    });
-  } else {
-    raw.onRequest(async (requestData) => {
-      const { requestId } = requestData;
-      const webRequest = toWebRequest(requestData, baseUrl);
-
-      const reqCtx = {
-        requestId,
-        upgraded: false,
-        connectionId: null as string | null,
-        remoteAddr: requestData.remoteAddr,
-      };
-      requestContexts.set(webRequest, reqCtx);
-
-      let response: Response;
-      try {
-        const result = await fetchHandler(webRequest, handle!);
-        if (!(result instanceof Response)) {
-          response = new Response(
-            "Internal Server Error: fetch handler must return a Response",
-            { status: 500 },
-          );
-        } else {
-          response = result;
-        }
-      } catch (err) {
-        if (typeof errorHandler === "function") {
-          try {
-            response = await errorHandler(err as Error);
-          } catch {
-            response = new Response("Internal Server Error", { status: 500 });
-          }
-        } else {
-          console.error("[napi-router] Unhandled error in fetch handler:", err);
-          response = new Response("Internal Server Error", { status: 500 });
+        const connId = raw.upgrade(requestId);
+        if (connId) {
+          raw.sendResponse(requestId, {
+            status: 101,
+            headers: [],
+          });
+          return;
         }
       }
+    }
 
-      sendResponseFast(raw, requestId, response);
+    let body: number[] | undefined;
+    if (response.body) {
+      const ab = await response.arrayBuffer();
+      if (ab.byteLength > 0) {
+        body = Array.from(new Uint8Array(ab));
+      }
+    }
+
+    raw.sendResponse(requestId, {
+      status: response.status,
+      headers,
+      body,
     });
-  }
+  });
 
-  const info = await raw.listen(port, hostname);
-  handle = new Server(raw, info.port, info.address);
-  return handle;
+  await raw.listen(port, hostname);
+  return server;
 }
 
-/**
- * Non-throwing variant of `serve()`.
- * Returns `{ server, error }` instead of throwing.
- *
- * @example
- * ```ts
- * const { server, error } = await tryServe({ port: 3000, fetch: handler });
- * if (error) console.error('Failed to start:', error);
- * ```
- */
 export async function tryServe(
   options: ServeOptions,
 ): Promise<{ server: Server | null; error: Error | null }> {
