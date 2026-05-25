@@ -7,6 +7,7 @@ import {
 } from "../router/handler";
 import { Context } from "../context";
 import { ResponseBuilder } from "../responseBuilder";
+import { EnhancedRequest } from "../enhancedRequest";
 import type { EndpointRoute, WebSocketData } from "../types";
 import type { Server } from "../../serve";
 import { HttpMethod } from "../method";
@@ -14,7 +15,7 @@ import { HttpMethod } from "../method";
 describe("innerHandle", () => {
   test("returns 500 when requestIP returns null", async () => {
     const routes: EndpointRoute[] = [];
-    const req = new Request("http://localhost/test") as Request;
+    const req = new EnhancedRequest("http://localhost/test");
     const server = { requestIP: () => null } as unknown as Server;
     const res = await innerHandle(routes, req, server);
     expect(res.status).toBe(500);
@@ -30,10 +31,10 @@ describe("innerHandle", () => {
         },
       },
     ];
-    const req = new Request("http://localhost/test") as Request;
+    const req = new EnhancedRequest("http://localhost/test");
     const server = {
       requestIP: () => ({ address: "127.0.0.1", family: "IPv4", port: 0 }),
-    } as unknown as Server<WebSocketData>;
+    } as unknown as Server;
     const res = await innerHandle(routes, req, server);
     expect(res).toBeUndefined();
   });
@@ -51,10 +52,10 @@ describe("innerHandle", () => {
         },
       },
     ];
-    const req = new Request("http://localhost/test") as Request;
+    const req = new EnhancedRequest("http://localhost/test");
     const server = {
       requestIP: () => ({ address: "127.0.0.1", family: "IPv4", port: 0 }),
-    } as unknown as Server<WebSocketData>;
+    } as unknown as Server;
     const res = await innerHandle(routes, req, server);
     expect(res).toBeUndefined();
   });
@@ -73,10 +74,10 @@ describe("innerHandle", () => {
         },
       },
     ];
-    const req = new Request("http://localhost/test") as Request;
+    const req = new EnhancedRequest("http://localhost/test");
     const server = {
       requestIP: () => ({ address: "127.0.0.1", family: "IPv4", port: 0 }),
-    } as unknown as Server<WebSocketData>;
+    } as unknown as Server;
     const res = await innerHandle(routes, req, server);
     expect(await res.text()).toBe("from hook");
   });
@@ -99,10 +100,10 @@ describe("innerHandle", () => {
         },
       },
     ];
-    const req = new Request("http://localhost/test") as Request;
+    const req = new EnhancedRequest("http://localhost/test");
     const server = {
       requestIP: () => ({ address: "127.0.0.1", family: "IPv4", port: 0 }),
-    } as unknown as Server<WebSocketData>;
+    } as unknown as Server;
     const res = await innerHandle(routes, req, server);
     expect(await res.text()).toBe("async hook");
   });
@@ -122,10 +123,10 @@ describe("innerHandle", () => {
         },
       },
     ];
-    const req = new Request("http://localhost/test") as Request;
+    const req = new EnhancedRequest("http://localhost/test");
     const server = {
       requestIP: () => ({ address: "127.0.0.1", family: "IPv4", port: 0 }),
-    } as unknown as Server<WebSocketData>;
+    } as unknown as Server;
     const res = await innerHandle(routes, req, server);
     expect(await res.text()).toBe("async hook from sync");
   });
@@ -138,7 +139,7 @@ describe("route", () => {
       httpMethod: HttpMethod.GET,
       splitPath: ["test"],
       upgraded: false,
-    } as unknown as Request;
+    } as unknown as EnhancedRequest;
     const res = new ResponseBuilder();
     const ctx = new Context(req, res);
     route(routes, ctx);
@@ -160,7 +161,7 @@ describe("route", () => {
       httpMethod: HttpMethod.GET,
       splitPath: ["test"],
       upgraded: false,
-    } as unknown as Request;
+    } as unknown as EnhancedRequest;
     const res = new ResponseBuilder();
     const ctx = new Context(req, res);
     route(routes, ctx);
@@ -181,7 +182,7 @@ describe("route", () => {
       httpMethod: HttpMethod.GET,
       splitPath: ["test"],
       upgraded: false,
-    } as unknown as Request;
+    } as unknown as EnhancedRequest;
     const res = new ResponseBuilder();
     const ctx = new Context(req, res);
     route(routes, ctx);
@@ -209,7 +210,7 @@ describe("route", () => {
       httpMethod: HttpMethod.GET,
       splitPath: ["test"],
       upgraded: false,
-    } as unknown as Request;
+    } as unknown as EnhancedRequest;
     const res = new ResponseBuilder();
     const ctx = new Context(req, res);
     route(routes, ctx);
@@ -237,7 +238,7 @@ describe("route", () => {
       httpMethod: HttpMethod.GET,
       splitPath: ["test"],
       upgraded: false,
-    } as unknown as Request;
+    } as unknown as EnhancedRequest;
     const res = new ResponseBuilder();
     const ctx = new Context(req, res);
     route(routes, ctx);
@@ -261,7 +262,7 @@ describe("route", () => {
       httpMethod: HttpMethod.GET,
       splitPath: ["test"],
       upgraded: false,
-    } as unknown as Request;
+    } as unknown as EnhancedRequest;
     const res = new ResponseBuilder();
     const ctx = new Context(req, res);
     await route(routes, ctx);
@@ -284,7 +285,7 @@ describe("route", () => {
       httpMethod: HttpMethod.GET,
       splitPath: ["123"],
       upgraded: false,
-    } as unknown as Request;
+    } as unknown as EnhancedRequest;
     const res = new ResponseBuilder();
     const ctx = new Context(req, res);
     route(routes, ctx);
@@ -305,7 +306,7 @@ describe("route", () => {
       httpMethod: HttpMethod.POST,
       splitPath: ["test"],
       upgraded: false,
-    } as unknown as Request;
+    } as unknown as EnhancedRequest;
     const res = new ResponseBuilder();
     const ctx = new Context(req, res);
     route(routes, ctx);
@@ -328,7 +329,7 @@ describe("routeAsync", () => {
       httpMethod: HttpMethod.GET,
       splitPath: ["test"],
       upgraded: false,
-    } as unknown as Request;
+    } as unknown as EnhancedRequest;
     const res = new ResponseBuilder();
     const ctx = new Context(req, res);
     await routeAsync(routes, -1, Promise.resolve(), ctx);
@@ -356,7 +357,7 @@ describe("routeAsync", () => {
       httpMethod: HttpMethod.GET,
       splitPath: ["test"],
       upgraded: false,
-    } as unknown as Request;
+    } as unknown as EnhancedRequest;
     const res = new ResponseBuilder();
     const ctx = new Context(req, res);
     await routeAsync(routes, -1, Promise.resolve(), ctx);
@@ -379,7 +380,7 @@ describe("routeAsync", () => {
       httpMethod: HttpMethod.GET,
       splitPath: ["456"],
       upgraded: false,
-    } as unknown as Request;
+    } as unknown as EnhancedRequest;
     const res = new ResponseBuilder();
     const ctx = new Context(req, res);
     await routeAsync(routes, -1, Promise.resolve(), ctx);
@@ -407,7 +408,7 @@ describe("routeAsync", () => {
       httpMethod: HttpMethod.GET,
       splitPath: ["test"],
       upgraded: false,
-    } as unknown as Request;
+    } as unknown as EnhancedRequest;
     const res = new ResponseBuilder();
     const ctx = new Context(req, res);
     await routeAsync(routes, -1, Promise.resolve(), ctx);
@@ -435,7 +436,7 @@ describe("routeAsync", () => {
       httpMethod: HttpMethod.GET,
       splitPath: ["test"],
       upgraded: false,
-    } as unknown as Request;
+    } as unknown as EnhancedRequest;
     const res = new ResponseBuilder();
     const ctx = new Context(req, res);
     await routeAsync(routes, -1, Promise.resolve(), ctx);
@@ -458,7 +459,7 @@ describe("routeAsync", () => {
       httpMethod: HttpMethod.GET,
       splitPath: ["test"],
       upgraded: false,
-    } as unknown as Request;
+    } as unknown as EnhancedRequest;
     const res = new ResponseBuilder();
     const ctx = new Context(req, res);
     await routeAsync(routes, -1, Promise.resolve(), ctx);
@@ -471,7 +472,7 @@ describe("routeAsync", () => {
       httpMethod: HttpMethod.GET,
       splitPath: ["test"],
       upgraded: false,
-    } as unknown as Request;
+    } as unknown as EnhancedRequest;
     const res = new ResponseBuilder();
     const ctx = new Context(req, res);
     await routeAsync(routes, -1, Promise.resolve(), ctx);
@@ -498,10 +499,10 @@ describe("createHandler", () => {
       },
     ];
     const handler = createHandler(routes);
-    const req = new Request("http://localhost/test") as Request;
+    const req = new EnhancedRequest("http://localhost/test");
     const server = {
       requestIP: () => ({ address: "127.0.0.1", family: "IPv4", port: 0 }),
-    } as unknown as Server<WebSocketData>;
+    } as unknown as Server;
     const res = await handler(req, server);
     expect(res).toBeInstanceOf(Response);
   });

@@ -4,6 +4,7 @@ import { Param } from "./router/param";
 import { parseHttpMethods } from "./method";
 import { splitPath } from "./path";
 import type { Request as EnhancedRequest } from "./types";
+import { EnhancedRequest as EnhancedRequestImpl } from "./enhancedRequest";
 
 export interface TestContextOptions {
   method?: string;
@@ -53,11 +54,11 @@ export function createTestContext(opts: TestContextOptions = {}): Context {
 
   const fullUrl = url.startsWith("http") ? url : `http://localhost${url}`;
   const parsedUrl = new URL(fullUrl);
-  const req = new Request(fullUrl, {
+  const req = new EnhancedRequestImpl(fullUrl, {
     method,
     headers: headerMap,
     body,
-  }) as unknown as EnhancedRequest;
+  }) as EnhancedRequest;
 
   // Merge URL query params with provided query params
   const mergedQuery: Record<string, string> = { ...providedQuery };

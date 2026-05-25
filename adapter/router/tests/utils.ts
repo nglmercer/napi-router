@@ -1,15 +1,12 @@
 import { mock } from "bun:test";
-import type { Server, SocketAddress } from "bun";
-import type {
-  WebSocketData,
-  CookieOptions,
-  Request as EnhancedRequest,
-} from "../types";
+import type { Server, SocketAddress } from "../../serve";
+import type { CookieOptions, Request as EnhancedRequest } from "../types";
 import type { ResponseBuilder } from "../responseBuilder";
 import { Param } from "../router/param";
 import { HttpMethod, parseHttpMethods } from "../method";
 import type { SplitPath } from "../path";
 import type { Awaitable } from "../types";
+import { EnhancedRequest as EnhancedRequestImpl } from "../enhancedRequest";
 
 // ─── Tracked mock helper ─────────────────────────────────────────────
 
@@ -69,7 +66,7 @@ export interface MockRequestInit {
   httpMethod?: HttpMethod | string;
   path?: string;
   splitPath?: SplitPath;
-  server?: Partial<Server<WebSocketData>>;
+  server?: Partial<Server>;
   sock?: Partial<SocketAddress>;
   cookies?: Record<string, string | undefined>;
   originCookies?: unknown;
@@ -116,7 +113,7 @@ export class MockRequest extends EventTarget {
   httpMethod: HttpMethod;
   path: string;
   splitPath: SplitPath;
-  server: Server<WebSocketData>;
+  server: Server;
   sock: SocketAddress;
   originCookies: unknown;
   cookies: Record<string, string | undefined>;
@@ -157,7 +154,7 @@ export class MockRequest extends EventTarget {
         : (options.httpMethod ?? parseHttpMethods(this.method));
     this.path = options.path ?? new URL(this.url).pathname;
     this.splitPath = options.splitPath;
-    this.server = (options.server ?? {}) as Server<WebSocketData>;
+    this.server = (options.server ?? {}) as Server;
     this.sock = (options.sock ?? {}) as SocketAddress;
     this.cookies = ("cookies" in options ? options.cookies : {}) as Record<
       string,
@@ -576,7 +573,7 @@ export const createMockServer = () => {
     port: 3000,
     development: false,
     id: "",
-  } as unknown as Server<WebSocketData>;
+  } as unknown as Server;
 
   Object.defineProperty(server, "url", {
     value: new URL("http://localhost:3000"),
@@ -617,6 +614,26 @@ export const createMockReq = (
     ...rest,
     body: body ?? undefined,
   }) as unknown as EnhancedRequest;
+};
+
+/**
+ * Creates an EnhancedRequest (extends the real Request class) pre-configured
+ * for testing. All custom NRequest fields are writable and can be set after
+ * construction if needed.
+ *
+ * @example
+ * ```ts
+ * const req = createNRequest("http://localhost/foo");
+ * req.server = createMockServer();
+ * req.splitPath = ["foo"];
+ * ```
+ */
+export const createNRequest = (
+  url: string = "http://localhost/",
+  init?: RequestInit,
+): EnhancedRequest => {
+  const req = new EnhancedRequestImpl(url, init) as EnhancedRequest;
+  return req;
 };
 
 /**
