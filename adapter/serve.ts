@@ -317,6 +317,45 @@ function toWebRequest(data: RawRequestData, baseUrl: string): Request {
   return new Request(url, init);
 }
 
+function encodeResponseBuffer(
+  status: number,
+  headers: string[],
+  body?: Uint8Array | ArrayBuffer | null,
+): Uint8Array {
+  const encoder = new TextEncoder();
+  const encodedHeaders: Uint8Array[] = [];
+  let headerSectionSize = 4;
+  for (const h of headers) {
+    const bytes = encoder.encode(h);
+    encodedHeaders.push(bytes);
+    headerSectionSize += 4 + bytes.byteLength;
+  }
+
+  const bodyBytes = body
+    ? (body instanceof Uint8Array ? body : new Uint8Array(body as ArrayBuffer))
+    : null;
+  const bodySize = bodyBytes?.byteLength ?? 0;
+  const totalSize = 2 + 4 + headerSectionSize + bodySize;
+  const buf = new Uint8Array(totalSize);
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+
+  let offset = 0;
+  view.setUint16(offset, status, true); offset += 2;
+  view.setUint32(offset, headerSectionSize, true); offset += 4;
+
+  view.setUint32(offset, headers.length, true); offset += 4;
+  for (const bytes of encodedHeaders) {
+    view.setUint32(offset, bytes.byteLength, true); offset += 4;
+    buf.set(bytes, offset); offset += bytes.byteLength;
+  }
+
+  if (bodyBytes) {
+    buf.set(bodyBytes, offset);
+  }
+
+  return buf;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function sendResponseFast(
   raw: any,
@@ -330,39 +369,26 @@ function sendResponseFast(
 
   const rawBody = response._rawBody;
   if (typeof rawBody === "string") {
-    raw.sendResponseText(requestId, response.status, headers, rawBody);
+    const body = new TextEncoder().encode(rawBody);
+    const buf = encodeResponseBuffer(response.status, headers, body);
+    raw.sendResponseRaw(requestId, buf);
     return;
   }
-  if (rawBody instanceof Uint8Array) {
-    // Pass the Uint8Array directly — Rust side accepts Buffer | Vec<u8>.
-    raw.sendResponseBuffer(requestId, response.status, headers, rawBody);
-    return;
-  }
-  if (rawBody instanceof ArrayBuffer) {
-    raw.sendResponseBuffer(
-      requestId,
-      response.status,
-      headers,
-      new Uint8Array(rawBody),
-    );
+  if (rawBody instanceof Uint8Array || rawBody instanceof ArrayBuffer) {
+    const buf = encodeResponseBuffer(response.status, headers, rawBody);
+    raw.sendResponseRaw(requestId, buf);
     return;
   }
 
   response.arrayBuffer().then(
-    (buf) =>
-      raw.sendResponseBuffer(
-        requestId,
-        response.status,
-        headers,
-        new Uint8Array(buf),
-      ),
-    () =>
-      raw.sendResponseBuffer(
-        requestId,
-        response.status,
-        headers,
-        new Uint8Array(0),
-      ),
+    (buf) => {
+      const encoded = encodeResponseBuffer(response.status, headers, buf);
+      raw.sendResponseRaw(requestId, encoded);
+    },
+    () => {
+      const encoded = encodeResponseBuffer(response.status, headers, null);
+      raw.sendResponseRaw(requestId, encoded);
+    },
   );
 }
 

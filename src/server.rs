@@ -9,7 +9,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use napi::bindgen_prelude::{Error, Result};
+use napi::bindgen_prelude::{Buffer, Error, Result};
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::{Status, Unknown};
 use napi_derive::napi;
@@ -194,6 +194,75 @@ impl HttpServer {
                 connection_id: None,
             };
             let _ = tx.send(response);
+        }
+    }
+
+    /// Binary protocol: buffer contains [status:u16 LE][header_section_len:u32 LE] +
+    /// [num_strings:u32 LE] + alternating (key_len:u32 LE, key_bytes, val_len:u32 LE, val_bytes) + body
+    #[napi]
+    pub fn send_response_raw(&self, request_id: u32, buf: Buffer) {
+        let data = buf.as_ref();
+        if data.len() < 6 {
+            return;
+        }
+        let status = u16::from_le_bytes([data[0], data[1]]);
+        let header_size =
+            u32::from_le_bytes([data[2], data[3], data[4], data[5]]) as usize;
+        if data.len() < 6 + header_size {
+            return;
+        }
+        let header_data = &data[6..6 + header_size];
+        if header_data.len() < 4 {
+            return;
+        }
+        let num_strings =
+            u32::from_le_bytes([header_data[0], header_data[1], header_data[2], header_data[3]])
+                as usize;
+        let mut headers = Vec::with_capacity(num_strings);
+        let mut pos = 4;
+        let mut valid = true;
+        for _ in 0..num_strings {
+            if pos + 4 > header_data.len() {
+                valid = false;
+                break;
+            }
+            let len = u32::from_le_bytes([
+                header_data[pos],
+                header_data[pos + 1],
+                header_data[pos + 2],
+                header_data[pos + 3],
+            ]) as usize;
+            pos += 4;
+            if pos + len > header_data.len() {
+                valid = false;
+                break;
+            }
+            match std::str::from_utf8(&header_data[pos..pos + len]) {
+                Ok(s) => headers.push(s.to_string()),
+                Err(_) => {
+                    valid = false;
+                    break;
+                }
+            }
+            pos += len;
+        }
+        if !valid {
+            return;
+        }
+        let body_start = 6 + header_size;
+        let body = if data.len() > body_start {
+            Some(data[body_start..].to_vec())
+        } else {
+            None
+        };
+        if let Some((_, tx)) = self.inner.pending.remove(&request_id) {
+            let _ = tx.send(ResponseData {
+                status,
+                headers,
+                body,
+                upgrade: None,
+                connection_id: None,
+            });
         }
     }
 
@@ -408,7 +477,7 @@ async fn handle_request(
         let headers: Vec<String> = {
             let mut v = Vec::with_capacity(req_ref.headers().len() * 2);
             for (k, val) in req_ref.headers().iter() {
-                v.push(k.as_str().to_lowercase());
+                v.push(k.as_str().to_string());
                 v.push(val.to_str().unwrap_or("").to_string());
             }
             v
@@ -436,7 +505,7 @@ async fn handle_request(
             if body_bytes.is_empty() {
                 None
             } else {
-                Some(body_bytes.to_vec())
+                Some(Vec::from(body_bytes))
             }
         };
         let url = parts.uri.to_string();
@@ -444,7 +513,7 @@ async fn handle_request(
         let headers: Vec<String> = {
             let mut v = Vec::with_capacity(parts.headers.len() * 2);
             for (k, val) in parts.headers.iter() {
-                v.push(k.as_str().to_lowercase());
+                v.push(k.as_str().to_string());
                 v.push(val.to_str().unwrap_or("").to_string());
             }
             v
@@ -467,10 +536,7 @@ async fn handle_request(
     let (tx, rx) = oneshot::channel::<ResponseData>();
     state.pending.insert(request_id, tx);
 
-    let tsfn = {
-        let lock = state.on_request.lock();
-        lock.clone()
-    };
+    let tsfn = state.on_request.lock().as_ref().map(Arc::clone);
 
     if let Some(tsfn) = tsfn {
         if tsfn.call(request_data, ThreadsafeFunctionCallMode::NonBlocking) != Status::Ok {
@@ -545,10 +611,7 @@ async fn handle_ws_upgrade(
         }
     }
 
-    let event_tsfn = {
-        let lock = state.on_ws_event.lock();
-        lock.clone()
-    };
+    let event_tsfn = state.on_ws_event.lock().as_ref().map(Arc::clone);
 
     let senders = state.ws_senders.clone();
 

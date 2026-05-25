@@ -9,6 +9,11 @@ export declare class HttpServer {
   sendResponse(requestId: number, response: ResponseData): void
   sendResponseText(requestId: number, status: number, headers: Array<string>, body: string): void
   sendResponseBuffer(requestId: number, status: number, headers: Array<string>, body: Array<number>): void
+  /**
+   * Binary protocol: buffer contains [status:u16 LE][header_section_len:u32 LE] +
+   * [num_strings:u32 LE] + alternating (key_len:u32 LE, key_bytes, val_len:u32 LE, val_bytes) + body
+   */
+  sendResponseRaw(requestId: number, buf: Buffer): void
   pendingCount(): number
   wsSend(connectionId: string, message: string): number
   wsSendBinary(connectionId: string, data: Array<number>): number

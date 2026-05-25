@@ -153,16 +153,17 @@ describe('serve() input validation', () => {
 // Port conflicts — serve()
 // ---------------------------------------------------------------------------
 
-describe('Port conflict — serve()', () => {
-  it('rejects when port is already in use', async () => {
+describe('SO_REUSEPORT — multiple servers on the same port', () => {
+  it('allows multiple servers to share a port', async () => {
     const port = nextPort('ERRORS');
     const first = await serve({ port, fetch: () => new Response('first') });
+    const second = await serve({ port, fetch: () => new Response('second') });
     try {
-      await expect(
-        serve({ port, fetch: () => new Response('second') })
-      ).rejects.toThrow(/Failed to bind|address already in use/i);
+      const res = await fetch(`http://127.0.0.1:${port}/`);
+      expect(res.status).toBe(200);
     } finally {
       first.stop();
+      second.stop();
     }
   });
 });
@@ -189,7 +190,7 @@ describe('tryServe()', () => {
     server!.stop();
   });
 
-  it('returns { server: null, error } on port conflict', async () => {
+  it('returns { server, error: null } on port conflict (SO_REUSEPORT enabled)', async () => {
     const port = nextPort('ERRORS');
     const first = await serve({ port, fetch: () => new Response('first') });
     try {
@@ -197,9 +198,8 @@ describe('tryServe()', () => {
         port,
         fetch: () => new Response('second'),
       });
-      expect(server).toBeNull();
-      expect(error).toBeInstanceOf(Error);
-      expect(error!.message).toMatch(/Failed to bind|address already in use/i);
+      expect(server).not.toBeNull();
+      expect(error).toBeNull();
     } finally {
       first.stop();
     }
@@ -215,12 +215,13 @@ describe('tryServe()', () => {
     server!.stop();
   });
 
-  it('server field is null (not undefined) on failure', async () => {
+  it('multiple tryServe on same port succeeds (SO_REUSEPORT enabled)', async () => {
     const port = nextPort('ERRORS');
     const first = await serve({ port, fetch: () => new Response('ok') });
     try {
       const { server } = await tryServe({ port, fetch: () => new Response('ok') });
-      expect(server).toBeNull();
+      expect(server).not.toBeNull();
+      server!.stop();
     } finally {
       first.stop();
     }

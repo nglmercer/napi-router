@@ -130,7 +130,7 @@ describe('Default option values', () => {
       s.stop();
     } catch (e: unknown) {
       // Port 3000 might already be in use in CI — skip gracefully
-      if (e instanceof Error && /Failed to bind|address already in use/i.test(e.message)) {
+      if (e instanceof Error && /Failed to bind|already in use/i.test(e.message)) {
         console.warn('[skip] Port 3000 is already in use');
       } else {
         throw e;
