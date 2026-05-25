@@ -88,10 +88,18 @@ impl HttpServer {
 
     #[napi]
     pub async fn listen(&self, port: u16, hostname: Option<String>) -> Result<ServerInfo> {
-        let addr = format!("{}:{}", hostname.unwrap_or_else(|| "0.0.0.0".into()), port);
-        let listener = TcpListener::bind(&addr)
-            .await
-            .map_err(|e| Error::from_reason(format!("Failed to bind: {}", e)))?;
+        let addr = format!("{}:{}", hostname.clone().unwrap_or_else(|| "0.0.0.0".into()), port);
+        let listener = match TcpListener::bind(&addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                let err_msg = if e.to_string().contains("Address already in use") {
+                    format!("Port {} is already in use. Please use a different port.", port)
+                } else {
+                    format!("Failed to bind to {}: {}", addr, e)
+                };
+                return Err(Error::from_reason(err_msg));
+            }
+        };
         let local_addr = listener
             .local_addr()
             .map_err(|e| Error::from_reason(format!("Failed to get local addr: {}", e)))?;

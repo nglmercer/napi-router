@@ -37,7 +37,7 @@ export interface ResponseData {
   status: number
   headers: Array<string>
   /** Accepted from JS as `Uint8Array` OR `number[]` via the adapter. */
-  body?: Array<number> 
+  body?: Array<number>
   upgrade?: boolean
   connectionId?: string
 }
