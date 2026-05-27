@@ -66,7 +66,6 @@ import {
 } from "./router/fileUpload";
 import {
   validate as createValidateMiddleware,
-  schemaDefToJson,
   type RouteSchemaDefinition,
 } from "./router/validator";
 import type { Validator } from "../../index.js";

@@ -946,3 +946,298 @@ describe("Zero-duplicate parsing", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rust Builder API (SchemaBuilder, StringField, NumberField, etc.)
+// ---------------------------------------------------------------------------
+
+describe("Rust Builder API", () => {
+  it("SchemaBuilder with StringField validates correctly", () => {
+    const validator = new Validator();
+
+    const schema = new SchemaBuilder();
+    const nameField = new StringField();
+    nameField.required();
+    nameField.setMin(2);
+    nameField.setMax(100);
+    schema.addBodyString("name", nameField);
+
+    const emailField = new StringField();
+    emailField.required();
+    emailField.setPattern("email");
+    schema.addBodyString("email", emailField);
+
+    validator.addSchemaFromBuilder("POST:/users", schema);
+
+    // Valid
+    const result1 = validator.validateBody(
+      "POST:/users",
+      JSON.stringify({ name: "John", email: "john@example.com" }),
+    );
+    expect(result1.success).toBe(true);
+
+    // Invalid - name too short
+    const result2 = validator.validateBody(
+      "POST:/users",
+      JSON.stringify({ name: "J", email: "john@example.com" }),
+    );
+    expect(result2.success).toBe(false);
+    expect(result2.errors![0].code).toBe("min_length");
+
+    // Invalid - bad email pattern
+    const result3 = validator.validateBody(
+      "POST:/users",
+      JSON.stringify({ name: "John", email: "notanemail" }),
+    );
+    expect(result3.success).toBe(false);
+    expect(result3.errors![0].code).toBe("pattern");
+  });
+
+  it("SchemaBuilder with NumberField validates correctly", () => {
+    const validator = new Validator();
+
+    const schema = new SchemaBuilder();
+    const ageField = new NumberField();
+    ageField.integer();
+    ageField.setMin(0);
+    ageField.setMax(200);
+    schema.addBodyNumber("age", ageField);
+
+    validator.addSchemaFromBuilder("POST:/users", schema);
+
+    // Valid
+    const result1 = validator.validateBody(
+      "POST:/users",
+      JSON.stringify({ age: 30 }),
+    );
+    expect(result1.success).toBe(true);
+
+    // Invalid - not an integer
+    const result2 = validator.validateBody(
+      "POST:/users",
+      JSON.stringify({ age: 30.5 }),
+    );
+    expect(result2.success).toBe(false);
+    expect(result2.errors![0].code).toBe("integer");
+
+    // Invalid - below min
+    const result3 = validator.validateBody(
+      "POST:/users",
+      JSON.stringify({ age: -1 }),
+    );
+    expect(result3.success).toBe(false);
+    expect(result3.errors![0].code).toBe("min");
+  });
+
+  it("SchemaBuilder with BooleanField validates correctly", () => {
+    const validator = new Validator();
+
+    const schema = new SchemaBuilder();
+    const activeField = new BooleanField();
+    activeField.required();
+    schema.addBodyBoolean("active", activeField);
+
+    validator.addSchemaFromBuilder("POST:/users", schema);
+
+    // Valid
+    const result1 = validator.validateBody(
+      "POST:/users",
+      JSON.stringify({ active: true }),
+    );
+    expect(result1.success).toBe(true);
+
+    // Invalid - not a boolean
+    const result2 = validator.validateBody(
+      "POST:/users",
+      JSON.stringify({ active: "yes" }),
+    );
+    expect(result2.success).toBe(false);
+    expect(result2.errors![0].code).toBe("type");
+  });
+
+  it("SchemaBuilder with ObjectField validates nested objects", () => {
+    const validator = new Validator();
+
+    const addressField = new ObjectField();
+    addressField.required();
+    const streetField = new StringField();
+    streetField.required();
+    addressField.addString("street", streetField);
+    const cityField = new StringField();
+    cityField.required();
+    addressField.addString("city", cityField);
+
+    const schema = new SchemaBuilder();
+    schema.addBodyObject("address", addressField);
+
+    validator.addSchemaFromBuilder("POST:/users", schema);
+
+    // Valid
+    const result1 = validator.validateBody(
+      "POST:/users",
+      JSON.stringify({ address: { street: "123 Main", city: "NYC" } }),
+    );
+    expect(result1.success).toBe(true);
+
+    // Invalid - missing required nested field
+    const result2 = validator.validateBody(
+      "POST:/users",
+      JSON.stringify({ address: { street: "123 Main" } }),
+    );
+    expect(result2.success).toBe(false);
+    expect(result2.errors![0].field).toContain("city");
+  });
+
+  it("SchemaBuilder with ArrayField validates arrays", () => {
+    const validator = new Validator();
+
+    const tagsField = new ArrayField();
+    tagsField.required();
+    tagsField.setMin(1);
+    tagsField.setMax(5);
+    const itemField = new StringField();
+    tagsField.ofString(itemField);
+
+    const schema = new SchemaBuilder();
+    schema.addBodyArray("tags", tagsField);
+
+    validator.addSchemaFromBuilder("POST:/users", schema);
+
+    // Valid
+    const result1 = validator.validateBody(
+      "POST:/users",
+      JSON.stringify({ tags: ["a", "b"] }),
+    );
+    expect(result1.success).toBe(true);
+
+    // Invalid - empty array (min: 1)
+    const result2 = validator.validateBody(
+      "POST:/users",
+      JSON.stringify({ tags: [] }),
+    );
+    expect(result2.success).toBe(false);
+    expect(result2.errors![0].code).toBe("min_items");
+  });
+
+  it("SchemaBuilder with query and params", () => {
+    const validator = new Validator();
+
+    const schema = new SchemaBuilder();
+    const qField = new StringField();
+    qField.required();
+    qField.setMin(1);
+    schema.addQueryString("q", qField);
+
+    const pageField = new NumberField();
+    pageField.integer();
+    pageField.setMin(1);
+    schema.addQueryNumber("page", pageField);
+
+    const idField = new NumberField();
+    idField.integer();
+    idField.required();
+    idField.setMin(1);
+    schema.addParamNumber("id", idField);
+
+    validator.addSchemaFromBuilder("GET:/users/:id", schema);
+
+    // Valid query
+    const result1 = validator.validateQuery("GET:/users/:id", { q: "test", page: "1" });
+    expect(result1.success).toBe(true);
+
+    // Invalid query - missing required
+    const result2 = validator.validateQuery("GET:/users/:id", { page: "1" });
+    expect(result2.success).toBe(false);
+
+    // Valid params
+    const result3 = validator.validateParams("GET:/users/:id", { id: "42" });
+    expect(result3.success).toBe(true);
+
+    // Invalid params
+    const result4 = validator.validateParams("GET:/users/:id", { id: "0" });
+    expect(result4.success).toBe(false);
+  });
+
+  it("SchemaBuilder with custom patterns", () => {
+    const validator = new Validator();
+    validator.addPattern("phone", "^\\+?[1-9]\\d{1,14}$");
+
+    const schema = new SchemaBuilder();
+    const phoneField = new StringField();
+    phoneField.required();
+    phoneField.setPattern("phone");
+    schema.addBodyString("phone", phoneField);
+
+    validator.addSchemaFromBuilder("POST:/contact", schema);
+
+    // Valid
+    const result1 = validator.validateBody(
+      "POST:/contact",
+      JSON.stringify({ phone: "+1234567890" }),
+    );
+    expect(result1.success).toBe(true);
+
+    // Invalid
+    const result2 = validator.validateBody(
+      "POST:/contact",
+      JSON.stringify({ phone: "not-a-phone" }),
+    );
+    expect(result2.success).toBe(false);
+    expect(result2.errors![0].code).toBe("pattern");
+  });
+
+  it("SchemaBuilder works with Router.validate()", async () => {
+    const port = nextPort("HTTP");
+    const validator = new Validator();
+    const router = new Router();
+    router.setValidator(validator);
+    router.body("*", "/api/*");
+
+    // Build schema using Rust builders
+    const schema = new SchemaBuilder();
+    const nameField = new StringField();
+    nameField.required();
+    nameField.setMin(2);
+    schema.addBodyString("name", nameField);
+    const emailField = new StringField();
+    emailField.required();
+    emailField.setPattern("email");
+    schema.addBodyString("email", emailField);
+
+    // Register with validator directly
+    validator.addSchemaFromBuilder("POST:/api/users", schema);
+
+    // Use the validator in a middleware
+    router.post("/api/users", (ctx) => {
+      const routeKey = `${ctx.req.method}:${new URL(ctx.req.url).pathname}`;
+      if (ctx.req.parsedBody) {
+        const result = validator.validateBodyValue(routeKey, JSON.stringify(ctx.req.parsedBody));
+        if (!result.success) {
+          ctx.status(400).json({ error: "Validation failed", errors: result.errors });
+          return;
+        }
+      }
+      ctx.json({ created: true });
+    });
+
+    await withServer(port, { fetch: router.handle }, async (server) => {
+      // Valid
+      const res1 = await post(
+        server,
+        "/api/users",
+        JSON.stringify({ name: "John", email: "john@example.com" }),
+        { headers: { "content-type": "application/json" } },
+      );
+      expect(res1.status).toBe(200);
+
+      // Invalid
+      const res2 = await post(
+        server,
+        "/api/users",
+        JSON.stringify({ name: "J", email: "bad" }),
+        { headers: { "content-type": "application/json" } },
+      );
+      expect(res2.status).toBe(400);
+    });
+  });
+});

@@ -15,7 +15,7 @@ export interface ServerWebSocket {
   isSubscribed(topic: string): boolean;
 }
 
-export type WebSocketConnectionData = Record<string, unknown> | null;
+export type WebSocketConnectionData = Record<string, unknown> | null | undefined;
 
 export interface WebSocketHandlers {
   open?(ws: ServerWebSocket): void | Promise<void>;
@@ -110,7 +110,7 @@ export class Server {
     if (connId == null) return false;
 
     connectionMetas.set(connId, {
-      data: options.data ?? null,
+      data: (options.data ?? null) as WebSocketConnectionData,
       remoteAddress: ctx.remoteAddr ?? null,
     });
     return true;
@@ -255,7 +255,10 @@ function makeWsProxy(connectionId: string, raw: HttpServer): ServerWebSocket {
     },
 
     publish(topic: string, message: string | Uint8Array | ArrayBuffer): void {
-      raw.wsPublish(connectionId, topic, message);
+      const msg = typeof message === "string"
+        ? message
+        : new TextDecoder().decode(message instanceof Uint8Array ? message : new Uint8Array(message));
+      raw.wsPublish(connectionId, topic, msg);
     },
   };
 }
