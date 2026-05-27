@@ -15,6 +15,12 @@ pub(crate) struct NativeResponseInner {
     pub(crate) body: Vec<u8>,
 }
 
+impl Default for NativeResponse {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl NativeResponse {
     #[napi(constructor)]

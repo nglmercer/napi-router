@@ -65,6 +65,12 @@ pub struct Validator {
     patterns: PatternRegistry,
 }
 
+impl Default for Validator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl Validator {
     #[napi(constructor)]
@@ -94,7 +100,7 @@ impl Validator {
     /// ```
     #[napi]
     pub fn add_pattern(&self, name: String, regex: String) -> Result<()> {
-        register_pattern(&self.patterns, &name, &regex).map_err(|e| Error::from_reason(e))
+        register_pattern(&self.patterns, &name, &regex).map_err(Error::from_reason)
     }
 
     /// Register a validation schema for a route.

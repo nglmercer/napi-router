@@ -489,7 +489,7 @@ impl HttpServer {
             Some(entry) => entry
                 .value()
                 .iter()
-                .filter(|id| exclude_id.as_ref().map_or(true, |ex| *id != ex))
+                .filter(|id| exclude_id.as_ref() != Some(*id))
                 .cloned()
                 .collect(),
             None => return 0,

@@ -52,6 +52,9 @@ pub enum FieldDef {
     },
 }
 
+/// Type alias for compiled property lists (reduces complexity).
+type CompiledProperties = Box<[(Box<str>, CompiledField)]>;
+
 /// Pre-compiled schema for fast validation (avoids repeated string matching).
 #[derive(Debug, Clone)]
 pub enum CompiledField {
@@ -78,7 +81,7 @@ pub enum CompiledField {
     },
     Object {
         required: bool,
-        properties: Option<Box<[(Box<str>, CompiledField)]>>,
+        properties: Option<CompiledProperties>,
     },
     Array {
         required: bool,
@@ -125,16 +128,18 @@ impl CompiledPattern {
         match self {
             CompiledPattern::Email => {
                 value.len() >= 5
-                    && value.as_bytes().iter().any(|&b| b == b'@')
-                    && value.as_bytes().iter().any(|&b| b == b'.')
+                    && value.as_bytes().contains(&b'@')
+                    && value.as_bytes().contains(&b'.')
             }
-            CompiledPattern::Url => value.starts_with("http://") || value.starts_with("https://"),
+            CompiledPattern::Url => {
+                value.starts_with("http://") || value.starts_with("https://")
+            }
             CompiledPattern::Uuid => {
                 value.len() == 36
                     && value.as_bytes().iter().enumerate().all(|(i, &b)| {
-                        (b >= b'0' && b <= b'9')
-                            || (b >= b'a' && b <= b'f')
-                            || (b >= b'A' && b <= b'F')
+                        b.is_ascii_digit()
+                            || (b'a'..=b'f').contains(&b)
+                            || (b'A'..=b'F').contains(&b)
                             || ((i == 8 || i == 13 || i == 18 || i == 23) && b == b'-')
                     })
             }
@@ -186,9 +191,7 @@ fn compile_field(def: &FieldDef, registry: Option<&PatternRegistry>) -> Compiled
             required: *required,
             min: *min,
             max: *max,
-            pattern: pattern
-                .as_deref()
-                .and_then(|p| compile_pattern(p, registry)),
+            pattern: pattern.as_deref().and_then(|p| compile_pattern(p, registry)),
             enum_values: enum_values
                 .as_ref()
                 .map(|v| v.iter().map(|s| s.as_str().into()).collect()),
@@ -241,7 +244,9 @@ fn compile_field(def: &FieldDef, registry: Option<&PatternRegistry>) -> Compiled
             ..
         } => CompiledField::Array {
             required: *required,
-            items: items.as_ref().map(|i| Box::new(compile_field(i, registry))),
+            items: items
+                .as_ref()
+                .map(|i| Box::new(compile_field(i, registry))),
             min: *min,
             max: *max,
         },
@@ -271,15 +276,15 @@ pub struct RouteSchema {
 /// Pre-compiled route schema for fast validation.
 #[derive(Debug, Clone)]
 pub struct CompiledRouteSchema {
-    pub body: Option<Box<[(Box<str>, CompiledField)]>>,
-    pub query: Option<Box<[(Box<str>, CompiledField)]>>,
-    pub params: Option<Box<[(Box<str>, CompiledField)]>>,
+    pub body: Option<CompiledProperties>,
+    pub query: Option<CompiledProperties>,
+    pub params: Option<CompiledProperties>,
 }
 
 impl CompiledRouteSchema {
     pub fn compile(schema: &RouteSchema, registry: Option<&PatternRegistry>) -> Self {
         let compile_map =
-            |map: &Option<HashMap<String, FieldDef>>| -> Option<Box<[(Box<str>, CompiledField)]>> {
+            |map: &Option<HashMap<String, FieldDef>>| -> Option<CompiledProperties> {
                 map.as_ref().map(|m| {
                     let mut v: Vec<(Box<str>, CompiledField)> = m
                         .iter()
@@ -328,11 +333,6 @@ impl ErrorBuffer {
     }
 
     #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.errors.is_empty()
-    }
-
-    #[inline]
     pub fn into_vec(self) -> Vec<ValidationError> {
         self.errors
     }
@@ -340,20 +340,25 @@ impl ErrorBuffer {
 
 // ─── Fast validation using compiled schemas ───────────────────────────
 
+/// Validation context to reduce argument count.
+struct ValidationContext<'a> {
+    min: &'a Option<f64>,
+    max: &'a Option<f64>,
+    pattern: &'a Option<CompiledPattern>,
+    enum_values: &'a Option<Vec<Box<str>>>,
+    registry: Option<&'a PatternRegistry>,
+}
+
 #[inline]
 fn validate_string_fast(
     value: &[u8],
-    min: &Option<f64>,
-    max: &Option<f64>,
-    pattern: &Option<CompiledPattern>,
-    enum_values: &Option<Vec<Box<str>>>,
+    ctx: &ValidationContext<'_>,
     err: &mut ErrorBuffer,
     field_path: &str,
-    registry: Option<&PatternRegistry>,
 ) {
     let len = value.len() as f64;
 
-    if let Some(min_val) = min {
+    if let Some(min_val) = ctx.min {
         if len < *min_val {
             err.push(
                 field_path,
@@ -362,7 +367,7 @@ fn validate_string_fast(
             );
         }
     }
-    if let Some(max_val) = max {
+    if let Some(max_val) = ctx.max {
         if len > *max_val {
             err.push(
                 field_path,
@@ -371,10 +376,10 @@ fn validate_string_fast(
             );
         }
     }
-    if let Some(ref pat) = pattern {
+    if let Some(ref pat) = ctx.pattern {
         // SAFETY: we only check ASCII bytes for patterns
         let s = unsafe { std::str::from_utf8_unchecked(value) };
-        if !pat.matches(s, registry) {
+        if !pat.matches(s, ctx.registry) {
             err.push(
                 field_path,
                 "Value does not match pattern".to_string(),
@@ -382,10 +387,14 @@ fn validate_string_fast(
             );
         }
     }
-    if let Some(ref allowed) = enum_values {
+    if let Some(ref allowed) = ctx.enum_values {
         let s = unsafe { std::str::from_utf8_unchecked(value) };
         if !allowed.iter().any(|a| a.as_ref() == s) {
-            err.push(field_path, "Value must be one of enum".to_string(), "enum");
+            err.push(
+                field_path,
+                "Value must be one of enum".to_string(),
+                "enum",
+            );
         }
     }
 }
@@ -408,12 +417,20 @@ fn validate_number_fast(
     }
     if let Some(min_val) = min {
         if value < *min_val {
-            err.push(field_path, format!("Value must be >= {}", min_val), "min");
+            err.push(
+                field_path,
+                format!("Value must be >= {}", min_val),
+                "min",
+            );
         }
     }
     if let Some(max_val) = max {
         if value > *max_val {
-            err.push(field_path, format!("Value must be <= {}", max_val), "max");
+            err.push(
+                field_path,
+                format!("Value must be <= {}", max_val),
+                "max",
+            );
         }
     }
 }
@@ -434,21 +451,21 @@ fn validate_compiled_field(
             ..
         } => {
             if let Some(s) = value.as_str() {
-                validate_string_fast(
-                    s.as_bytes(),
+                let ctx = ValidationContext {
                     min,
                     max,
                     pattern,
                     enum_values,
-                    err,
-                    field_path,
                     registry,
-                );
+                };
+                validate_string_fast(s.as_bytes(), &ctx, err, field_path);
             } else {
                 err.push(field_path, "Expected string".into(), "type");
             }
         }
-        CompiledField::Number { min, max, int, .. } => {
+        CompiledField::Number {
+            min, max, int, ..
+        } => {
             if let Some(n) = value.as_f64() {
                 validate_number_fast(n, min, max, *int, err, field_path);
             } else {
@@ -608,18 +625,18 @@ fn validate_string_as_field_fast(
             enum_values,
             ..
         } => {
-            validate_string_fast(
-                value.as_bytes(),
+            let ctx = ValidationContext {
                 min,
                 max,
                 pattern,
                 enum_values,
-                err,
-                field_path,
                 registry,
-            );
+            };
+            validate_string_fast(value.as_bytes(), &ctx, err, field_path);
         }
-        CompiledField::Number { min, max, int, .. } => {
+        CompiledField::Number {
+            min, max, int, ..
+        } => {
             if let Ok(n) = fast_float_parse(value) {
                 validate_number_fast(n, min, max, *int, err, field_path);
             } else {
@@ -721,7 +738,7 @@ fn fast_float_parse(s: &str) -> Result<f64, ()> {
     let mut int_part: f64 = 0.0;
     let mut has_digit = false;
 
-    while i < bytes.len() && bytes[i] >= b'0' && bytes[i] <= b'9' {
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
         int_part = int_part * 10.0 + (bytes[i] - b'0') as f64;
         has_digit = true;
         i += 1;
@@ -737,7 +754,7 @@ fn fast_float_parse(s: &str) -> Result<f64, ()> {
         i += 1;
         let mut frac_part: f64 = 0.0;
         let mut frac_div: f64 = 1.0;
-        while i < bytes.len() && bytes[i] >= b'0' && bytes[i] <= b'9' {
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
             frac_part = frac_part * 10.0 + (bytes[i] - b'0') as f64;
             frac_div *= 10.0;
             i += 1;
