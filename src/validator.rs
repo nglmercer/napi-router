@@ -9,6 +9,7 @@ use crate::schema::{
     create_pattern_registry, register_pattern, validate_json_compiled, validate_query_compiled,
     CompiledRouteSchema, PatternRegistry, RouteSchema, ValidationError,
 };
+use crate::builders::SchemaBuilder;
 
 #[napi(object)]
 #[derive(Clone, Debug)]
@@ -113,6 +114,28 @@ impl Validator {
         let compiled = CompiledRouteSchema::compile(&raw, Some(&self.patterns));
         self.schemas.insert(route_key, compiled);
         Ok(())
+    }
+
+    /// Register a validation schema using a SchemaBuilder (faster, no JSON parsing).
+    /// This is the recommended way to register schemas for best performance.
+    ///
+    /// @param route_key Route key format: "METHOD:/path" (e.g. "POST:/users")
+    /// @param builder The SchemaBuilder instance with the schema definition
+    ///
+    /// @example
+    /// ```ts
+    /// const schema = new SchemaBuilder()
+    ///   .bodyString("name", new StringField().required().min(2))
+    ///   .bodyString("email", new StringField().required().pattern("email"))
+    ///   .queryNumber("page", new NumberField().integer().min(1))
+    ///
+    /// validator.addSchemaFromBuilder("POST:/users", schema)
+    /// ```
+    #[napi]
+    pub fn add_schema_from_builder(&self, route_key: String, builder: &SchemaBuilder) {
+        let raw = builder.build();
+        let compiled = CompiledRouteSchema::compile(&raw, Some(&self.patterns));
+        self.schemas.insert(route_key, compiled);
     }
 
     /// Check if a custom pattern is registered.
