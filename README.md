@@ -183,6 +183,35 @@ router.post("/users",
 const server = await serve({ port: 3000, fetch: router.handle });
 ```
 
+### Quick Start (Rust Builder — Fastest)
+
+```ts
+import { Validator, SchemaBuilder, StringField, NumberField } from "napi-router";
+import { Router } from "napi-router/adapter/router";
+
+const validator = new Validator();
+const router = new Router();
+router.setValidator(validator);
+router.body("*", "/api/*");
+
+// Build schema in Rust — zero JSON
+const schema = new SchemaBuilder();
+const nameField = new StringField(); nameField.required(); nameField.setMin(2);
+schema.addBodyString("name", nameField);
+const emailField = new StringField(); emailField.required(); emailField.setPattern("email");
+schema.addBodyString("email", emailField);
+const ageField = new NumberField(); ageField.integer(); ageField.setMin(0); ageField.setMax(200);
+schema.addBodyNumber("age", ageField);
+
+// Pass SchemaBuilder directly — zero JSON
+router.post("/users", router.validate(schema), (ctx) => {
+  ctx.json({ created: true });
+});
+
+const server = await serve({ port: 3000, fetch: router.handle });
+router.enableAutoValidate(server);  // Validation in Rust, 2.18x faster
+```
+
 ### Auto-Validate Mode (Fastest)
 
 For maximum performance, enable auto-validate on the server. Validation runs inside Rust before calling JS — no NAPI overhead:
@@ -531,26 +560,26 @@ Results (AMD Ryzen 7, Linux):
 ```
 SCHEMA REGISTRATION
 ───────────────────────────────────────────────────────────
-JSON string: validator.addSchema()              71.16K ops/sec
-Rust Builder: validator.addSchemaFromBuilder()  29.99K ops/sec
+JSON string: validator.addSchema()              80.31K ops/sec
+Rust Builder: validator.addSchemaFromBuilder()  36.02K ops/sec
 
 VALIDATION (valid body)
 ───────────────────────────────────────────────────────────
-Rust validateBody(JSON schema)       261.87K ops/sec
-Rust validateBody(Builder schema)    269.45K ops/sec
-Rust validateBodyBytes               271.14K ops/sec
-Manual JS: JSON.parse + validate     831.34K ops/sec
+Rust validateBody(JSON schema)       320.44K ops/sec
+Rust validateBody(Builder schema)    310.99K ops/sec
+Rust validateBodyBytes               288.73K ops/sec
+Manual JS: JSON.parse + validate     988.15K ops/sec
 
 HTTP REQUEST FLOW (10,000 requests)
 ───────────────────────────────────────────────────────────
-No validation                                           1.90K req/sec
-Auto-validate (JSON schema)                             4.84K req/sec  ← 2.32x faster
-Auto-validate (Rust builder schema)                     4.94K req/sec  ← 2.37x faster (best)
-Rust Validator middleware (TS s.* builder)              2.05K req/sec
-Manual JS validation middleware                         2.08K req/sec
+No validation                                           2.68K req/sec
+Auto-validate (JSON schema)                             5.61K req/sec  ← 2.18x faster
+Auto-validate (Rust builder schema)                     5.40K req/sec  ← 2.09x faster
+Rust Validator middleware (TS s.* builder)              2.48K req/sec
+Manual JS validation middleware                         2.58K req/sec
 ```
 
-**Auto-validate** is recommended for production workloads. The Rust builder schema is marginally faster than JSON schema for validation. The TS `s.*` builder and manual JS are equivalent in the middleware path (NAPI overhead dominates).
+**Auto-validate** is recommended for production workloads. The Rust builder schema avoids JSON serialization for schema registration. The TS `s.*` builder and manual JS are equivalent in the middleware path (NAPI overhead dominates).
 
 ## Benchmarks
 

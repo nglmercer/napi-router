@@ -118,12 +118,9 @@ impl Validator {
 
     /// Register a validation schema using a SchemaBuilder (zero-copy, no JSON).
     /// This is the fastest way to register schemas.
-    ///
-    /// @param route_key Route key format: "METHOD:/path" (e.g. "POST:/users")
-    /// @param builder The SchemaBuilder instance with the schema definition
     #[napi]
     pub fn add_schema_from_builder(&self, route_key: String, builder: &SchemaBuilder) {
-        let compiled = builder.compile();
+        let compiled = builder.compile_with_registry(Some(&self.patterns));
         self.schemas.insert(route_key, compiled);
     }
 

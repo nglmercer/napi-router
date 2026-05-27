@@ -3,31 +3,20 @@
 /** Array field builder with fluent API. */
 export declare class ArrayField {
   constructor()
-  /** Mark field as required. */
   required(): void
-  /** Set minimum array length. */
   setMin(length: number): void
-  /** Set maximum array length. */
   setMax(length: number): void
-  /** Set item type as string. */
   ofString(field: StringField): void
-  /** Set item type as number. */
   ofNumber(field: NumberField): void
-  /** Set item type as boolean. */
   ofBoolean(field: BooleanField): void
-  /** Set item type as object. */
   ofObject(field: ObjectField): void
-  /** Set item type as array (nested). */
   ofArray(field: ArrayField): void
 }
 
 /** Boolean field builder with fluent API. */
 export declare class BooleanField {
   constructor()
-  /** Mark field as required. */
   required(): void
-  /** Set default value. */
-  setDefault(value: boolean): void
 }
 
 export declare class HttpServer {
@@ -90,55 +79,32 @@ export declare class NativeResponse {
 /** Number field builder with fluent API. */
 export declare class NumberField {
   constructor()
-  /** Mark field as required. */
   required(): void
-  /** Restrict to integer values. */
   integer(): void
-  /** Set minimum value. */
   setMin(value: number): void
-  /** Set maximum value. */
   setMax(value: number): void
-  /** Set default value. */
-  setDefault(value: number): void
 }
 
 /** Object field builder with fluent API. */
 export declare class ObjectField {
   constructor()
-  /** Mark field as required. */
   required(): void
-  /** Add a string property. */
   addString(key: string, field: StringField): void
-  /** Add a number property. */
   addNumber(key: string, field: NumberField): void
-  /** Add a boolean property. */
   addBoolean(key: string, field: BooleanField): void
-  /** Add an object property. */
   addObject(key: string, field: ObjectField): void
-  /** Add an array property. */
   addArray(key: string, field: ArrayField): void
 }
 
 /**
  * Schema builder for defining validation rules for a route.
- * Rust-native builder — no JSON serialization needed.
+ * Compiles directly to Rust — no JSON serialization.
  *
  * @example
  * ```ts
- * const nameField = new StringField()
- * nameField.required()
- * nameField.setMin(2)
- * nameField.setMax(100)
- *
- * const emailField = new StringField()
- * emailField.required()
- * emailField.setPattern("email")
- *
  * const schema = new SchemaBuilder()
- * schema.addBodyString("name", nameField)
- * schema.addBodyString("email", emailField)
- * schema.addQueryNumber("page", new NumberField())
- *
+ * schema.addBodyString("name", new StringField().tap(f => f.required()))
+ * schema.addBodyString("email", new StringField().tap(f => f.setPattern("email")))
  * validator.addSchemaFromBuilder("POST:/users", schema)
  * ```
  */
@@ -177,8 +143,6 @@ export declare class StringField {
   setPattern(name: string): void
   /** Restrict to allowed values. */
   setEnum(values: Array<string>): void
-  /** Set default value. */
-  setDefault(value: string): void
 }
 
 export declare class Validator {
@@ -210,21 +174,8 @@ export declare class Validator {
    */
   addSchema(routeKey: string, schemaJson: string): void
   /**
-   * Register a validation schema using a SchemaBuilder (faster, no JSON parsing).
-   * This is the recommended way to register schemas for best performance.
-   *
-   * @param route_key Route key format: "METHOD:/path" (e.g. "POST:/users")
-   * @param builder The SchemaBuilder instance with the schema definition
-   *
-   * @example
-   * ```ts
-   * const schema = new SchemaBuilder()
-   *   .bodyString("name", new StringField().required().min(2))
-   *   .bodyString("email", new StringField().required().pattern("email"))
-   *   .queryNumber("page", new NumberField().integer().min(1))
-   *
-   * validator.addSchemaFromBuilder("POST:/users", schema)
-   * ```
+   * Register a validation schema using a SchemaBuilder (zero-copy, no JSON).
+   * This is the fastest way to register schemas.
    */
   addSchemaFromBuilder(routeKey: string, builder: SchemaBuilder): void
   /** Check if a custom pattern is registered. */

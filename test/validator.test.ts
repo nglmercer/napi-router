@@ -1240,4 +1240,110 @@ describe("Rust Builder API", () => {
       expect(res2.status).toBe(400);
     });
   });
+
+  it("router.validate(SchemaBuilder) works directly", async () => {
+    const port = nextPort("HTTP");
+    const validator = new Validator();
+    const router = new Router();
+    router.setValidator(validator);
+    router.body("*", "/api/*");
+
+    // Build schema using Rust builders
+    const schema = new SchemaBuilder();
+    const nameField = new StringField();
+    nameField.required();
+    nameField.setMin(2);
+    schema.addBodyString("name", nameField);
+    const emailField = new StringField();
+    emailField.required();
+    emailField.setPattern("email");
+    schema.addBodyString("email", emailField);
+    const ageField = new NumberField();
+    ageField.integer();
+    ageField.setMin(0);
+    ageField.setMax(200);
+    schema.addBodyNumber("age", ageField);
+
+    // Pass SchemaBuilder directly to router.validate() — zero JSON
+    router.post("/api/users", router.validate(schema), (ctx) => {
+      ctx.json({ created: true });
+    });
+
+    await withServer(port, { fetch: router.handle }, async (server) => {
+      // Valid
+      const res1 = await post(
+        server,
+        "/api/users",
+        JSON.stringify({ name: "John", email: "john@example.com", age: 30 }),
+        { headers: { "content-type": "application/json" } },
+      );
+      expect(res1.status).toBe(200);
+
+      // Invalid - name too short
+      const res2 = await post(
+        server,
+        "/api/users",
+        JSON.stringify({ name: "J", email: "john@example.com", age: 30 }),
+        { headers: { "content-type": "application/json" } },
+      );
+      expect(res2.status).toBe(400);
+
+      // Invalid - bad email
+      const res3 = await post(
+        server,
+        "/api/users",
+        JSON.stringify({ name: "John", email: "bad", age: 30 }),
+        { headers: { "content-type": "application/json" } },
+      );
+      expect(res3.status).toBe(400);
+
+      // Invalid - age out of range
+      const res4 = await post(
+        server,
+        "/api/users",
+        JSON.stringify({ name: "John", email: "john@example.com", age: 300 }),
+        { headers: { "content-type": "application/json" } },
+      );
+      expect(res4.status).toBe(400);
+    });
+  });
+
+  it("router.validate(SchemaBuilder) with custom patterns", async () => {
+    const port = nextPort("HTTP");
+    const validator = new Validator();
+    validator.addPattern("phone", "^\\+?[1-9]\\d{1,14}$");
+    const router = new Router();
+    router.setValidator(validator);
+    router.body("*", "/api/*");
+
+    const schema = new SchemaBuilder();
+    const phoneField = new StringField();
+    phoneField.required();
+    phoneField.setPattern("phone");
+    schema.addBodyString("phone", phoneField);
+
+    router.post("/api/contact", router.validate(schema), (ctx) => {
+      ctx.json({ ok: true });
+    });
+
+    await withServer(port, { fetch: router.handle }, async (server) => {
+      // Valid
+      const res1 = await post(
+        server,
+        "/api/contact",
+        JSON.stringify({ phone: "+1234567890" }),
+        { headers: { "content-type": "application/json" } },
+      );
+      expect(res1.status).toBe(200);
+
+      // Invalid
+      const res2 = await post(
+        server,
+        "/api/contact",
+        JSON.stringify({ phone: "not-a-phone" }),
+        { headers: { "content-type": "application/json" } },
+      );
+      expect(res2.status).toBe(400);
+    });
+  });
 });

@@ -612,35 +612,28 @@ export class Router {
    *
    * Requires a Validator to be set via `router.setValidator()` first.
    *
-   * @param schema The schema definition for body/query/params
+   * Accepts either:
+   * - A Rust `SchemaBuilder` (fastest, zero JSON)
+   * - A TS schema definition with `s.*` builders (convenient)
+   *
+   * @param schema The schema definition (SchemaBuilder or { body, query, params })
    * @returns A RequestMiddleware that validates the request
    *
    * @example
    * ```ts
-   * import { Validator } from "napi-router"
-   * import { s } from "napi-router/adapter/router/router/validator"
+   * // Rust SchemaBuilder (fastest)
+   * const schema = new SchemaBuilder()
+   * schema.addBodyString("name", new StringField().tap(f => f.required()))
+   * router.validate(schema)
    *
-   * const validator = new Validator()
-   * router.setValidator(validator)
-   *
-   * router.post("/users",
-   *   router.validate({
-   *     body: {
-   *       name: s.string({ required: true, min: 2, max: 100 }),
-   *       email: s.string({ required: true, pattern: "email" }),
-   *     },
-   *     query: {
-   *       format: s.string({ enum: ["short", "full"] }),
-   *     },
-   *   }),
-   *   async (ctx) => {
-   *     const user = ctx.req.parsedBody
-   *     return ctx.json({ created: true, user })
-   *   }
-   * )
+   * // TS s.* builder (convenient)
+   * router.validate({
+   *   body: { name: s.string().required().min(2) },
+   *   query: { page: s.integer().min(1) },
+   * })
    * ```
    */
-  validate(schema: RouteSchemaDefinition): RequestMiddleware {
+  validate(schema: SchemaBuilder | RouteSchemaDefinition): RequestMiddleware {
     if (!this._validator) {
       throw new Error(
         "Router.validate() requires a Validator. Call router.setValidator(validator) first.",

@@ -1,10 +1,23 @@
-use std::collections::HashMap;
-
 use napi_derive::napi;
 
-use crate::schema::{
-    CompiledField, CompiledPattern, CompiledProperties, CompiledRouteSchema, PatternRegistry,
-};
+use crate::schema::{CompiledField, CompiledPattern, CompiledRouteSchema, PatternRegistry};
+
+// ─── Pattern compilation helper ──────────────────────────────────────
+
+/// Compile a pattern name to a CompiledPattern.
+/// Built-in patterns are resolved immediately.
+/// Unknown patterns are stored as Custom (resolved at validation time via registry).
+fn compile_pattern(s: &str) -> CompiledPattern {
+    match s {
+        "email" => CompiledPattern::Email,
+        "url" => CompiledPattern::Url,
+        "uuid" => CompiledPattern::Uuid,
+        "alpha" => CompiledPattern::Alpha,
+        "alphanumeric" => CompiledPattern::Alphanumeric,
+        "numeric" => CompiledPattern::Numeric,
+        name => CompiledPattern::Custom(name.to_string()),
+    }
+}
 
 // ─── Field Schema Builder (NAPI-exposed) ─────────────────────────────
 
@@ -67,16 +80,13 @@ impl StringField {
         self.enum_values = Some(values);
     }
 
-    /// Compile to CompiledField directly (zero-copy, no JSON).
-    pub(crate) fn compile(&self, registry: Option<&PatternRegistry>) -> CompiledField {
+    /// Compile to CompiledField (patterns resolved immediately for built-ins, deferred for custom).
+    pub(crate) fn compile(&self) -> CompiledField {
         CompiledField::String {
             required: self.required,
             min: self.min,
             max: self.max,
-            pattern: self
-                .pattern
-                .as_deref()
-                .and_then(|p| compile_pattern(p, registry)),
+            pattern: self.pattern.as_deref().map(compile_pattern),
             enum_values: self
                 .enum_values
                 .as_ref()
@@ -112,31 +122,26 @@ impl NumberField {
         }
     }
 
-    /// Mark field as required.
     #[napi]
     pub fn required(&mut self) {
         self.required = true;
     }
 
-    /// Restrict to integer values.
     #[napi]
     pub fn integer(&mut self) {
         self.is_integer = true;
     }
 
-    /// Set minimum value.
     #[napi]
     pub fn set_min(&mut self, value: f64) {
         self.min = Some(value);
     }
 
-    /// Set maximum value.
     #[napi]
     pub fn set_max(&mut self, value: f64) {
         self.max = Some(value);
     }
 
-    /// Compile to CompiledField directly (zero-copy, no JSON).
     pub(crate) fn compile(&self) -> CompiledField {
         if self.is_integer {
             CompiledField::Integer {
@@ -174,13 +179,11 @@ impl BooleanField {
         BooleanField { required: false }
     }
 
-    /// Mark field as required.
     #[napi]
     pub fn required(&mut self) {
         self.required = true;
     }
 
-    /// Compile to CompiledField directly (zero-copy, no JSON).
     pub(crate) fn compile(&self) -> CompiledField {
         CompiledField::Boolean {
             required: self.required,
@@ -211,44 +214,37 @@ impl ObjectField {
         }
     }
 
-    /// Mark field as required.
     #[napi]
     pub fn required(&mut self) {
         self.required = true;
     }
 
-    /// Add a string property.
     #[napi]
-    pub fn add_string(&mut self, key: String, field: &StringField, registry: &PatternRegistry) {
+    pub fn add_string(&mut self, key: String, field: &StringField) {
         self.properties
-            .push((key, field.compile(Some(registry))));
+            .push((key, field.compile()));
     }
 
-    /// Add a number property.
     #[napi]
     pub fn add_number(&mut self, key: String, field: &NumberField) {
         self.properties.push((key, field.compile()));
     }
 
-    /// Add a boolean property.
     #[napi]
     pub fn add_boolean(&mut self, key: String, field: &BooleanField) {
         self.properties.push((key, field.compile()));
     }
 
-    /// Add an object property.
     #[napi]
     pub fn add_object(&mut self, key: String, field: &ObjectField) {
         self.properties.push((key, field.compile()));
     }
 
-    /// Add an array property.
     #[napi]
     pub fn add_array(&mut self, key: String, field: &ArrayField) {
         self.properties.push((key, field.compile()));
     }
 
-    /// Compile to CompiledField directly (zero-copy, no JSON).
     pub(crate) fn compile(&self) -> CompiledField {
         let mut props: Vec<(Box<str>, CompiledField)> = self
             .properties
@@ -290,55 +286,46 @@ impl ArrayField {
         }
     }
 
-    /// Mark field as required.
     #[napi]
     pub fn required(&mut self) {
         self.required = true;
     }
 
-    /// Set minimum array length.
     #[napi]
     pub fn set_min(&mut self, length: f64) {
         self.min = Some(length);
     }
 
-    /// Set maximum array length.
     #[napi]
     pub fn set_max(&mut self, length: f64) {
         self.max = Some(length);
     }
 
-    /// Set item type as string.
     #[napi]
-    pub fn of_string(&mut self, field: &StringField, registry: &PatternRegistry) {
-        self.items = Some(Box::new(field.compile(Some(registry))));
+    pub fn of_string(&mut self, field: &StringField) {
+        self.items = Some(Box::new(field.compile()));
     }
 
-    /// Set item type as number.
     #[napi]
     pub fn of_number(&mut self, field: &NumberField) {
         self.items = Some(Box::new(field.compile()));
     }
 
-    /// Set item type as boolean.
     #[napi]
     pub fn of_boolean(&mut self, field: &BooleanField) {
         self.items = Some(Box::new(field.compile()));
     }
 
-    /// Set item type as object.
     #[napi]
     pub fn of_object(&mut self, field: &ObjectField) {
         self.items = Some(Box::new(field.compile()));
     }
 
-    /// Set item type as array (nested).
     #[napi]
     pub fn of_array(&mut self, field: &ArrayField) {
         self.items = Some(Box::new(field.compile()));
     }
 
-    /// Compile to CompiledField directly (zero-copy, no JSON).
     pub(crate) fn compile(&self) -> CompiledField {
         CompiledField::Array {
             required: self.required,
@@ -357,10 +344,8 @@ impl ArrayField {
 /// @example
 /// ```ts
 /// const schema = new SchemaBuilder()
-/// schema.addBodyString("name", new StringField().tap(f => { f.required(); f.setMin(2) }))
-/// schema.addBodyString("email", new StringField().tap(f => { f.required(); f.setPattern("email") }))
-/// schema.addQueryNumber("page", new NumberField().tap(f => { f.integer(); f.setMin(1) }))
-///
+/// schema.addBodyString("name", new StringField().tap(f => f.required()))
+/// schema.addBodyString("email", new StringField().tap(f => f.setPattern("email")))
 /// validator.addSchemaFromBuilder("POST:/users", schema)
 /// ```
 #[napi]
@@ -368,7 +353,6 @@ pub struct SchemaBuilder {
     body: Vec<(String, CompiledField)>,
     query: Vec<(String, CompiledField)>,
     params: Vec<(String, CompiledField)>,
-    registry: Option<PatternRegistry>,
 }
 
 impl Default for SchemaBuilder {
@@ -385,21 +369,13 @@ impl SchemaBuilder {
             body: Vec::new(),
             query: Vec::new(),
             params: Vec::new(),
-            registry: None,
         }
-    }
-
-    /// Set the pattern registry for custom pattern compilation.
-    #[napi]
-    pub fn set_pattern_registry(&mut self, registry: &PatternRegistry) {
-        self.registry = Some(registry.clone());
     }
 
     /// Add a body field with a string schema.
     #[napi]
     pub fn add_body_string(&mut self, key: String, field: &StringField) {
-        self.body
-            .push((key, field.compile(self.registry.as_ref())));
+        self.body.push((key, field.compile()));
     }
 
     /// Add a body field with a number schema.
@@ -429,8 +405,7 @@ impl SchemaBuilder {
     /// Add a query parameter field with a string schema.
     #[napi]
     pub fn add_query_string(&mut self, key: String, field: &StringField) {
-        self.query
-            .push((key, field.compile(self.registry.as_ref())));
+        self.query.push((key, field.compile()));
     }
 
     /// Add a query parameter field with a number schema.
@@ -442,8 +417,7 @@ impl SchemaBuilder {
     /// Add a path parameter field with a string schema.
     #[napi]
     pub fn add_param_string(&mut self, key: String, field: &StringField) {
-        self.params
-            .push((key, field.compile(self.registry.as_ref())));
+        self.params.push((key, field.compile()));
     }
 
     /// Add a path parameter field with a number schema.
@@ -452,45 +426,29 @@ impl SchemaBuilder {
         self.params.push((key, field.compile()));
     }
 
-    /// Compile directly to CompiledRouteSchema (zero-copy, no JSON).
-    pub(crate) fn compile(&self) -> CompiledRouteSchema {
-        let compile_vec =
-            |v: &[(String, CompiledField)]| -> Option<CompiledProperties> {
-                if v.is_empty() {
-                    return None;
-                }
-                let mut props: Vec<(Box<str>, CompiledField)> = v
-                    .iter()
-                    .map(|(k, v)| (k.as_str().into(), v.clone()))
-                    .collect();
-                props.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-                Some(props.into_boxed_slice())
-            };
+    /// Compile to CompiledRouteSchema with pattern resolution.
+    /// Called internally by Validator.addSchemaFromBuilder().
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn compile_with_registry(
+        &self,
+        _registry: Option<&PatternRegistry>,
+    ) -> CompiledRouteSchema {
+        let compile_vec = |v: &[(String, CompiledField)]| -> Option<Box<[(Box<str>, CompiledField)]>> {
+            if v.is_empty() {
+                return None;
+            }
+            let mut props: Vec<(Box<str>, CompiledField)> = v
+                .iter()
+                .map(|(k, field)| (k.as_str().into(), field.clone()))
+                .collect();
+            props.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            Some(props.into_boxed_slice())
+        };
 
         CompiledRouteSchema {
             body: compile_vec(&self.body),
             query: compile_vec(&self.query),
             params: compile_vec(&self.params),
         }
-    }
-}
-
-// ─── Pattern compilation helper ──────────────────────────────────────
-
-fn compile_pattern(s: &str, registry: Option<&PatternRegistry>) -> Option<CompiledPattern> {
-    match s {
-        "email" => Some(CompiledPattern::Email),
-        "url" => Some(CompiledPattern::Url),
-        "uuid" => Some(CompiledPattern::Uuid),
-        "alpha" => Some(CompiledPattern::Alpha),
-        "alphanumeric" => Some(CompiledPattern::Alphanumeric),
-        "numeric" => Some(CompiledPattern::Numeric),
-        name => registry.and_then(|reg| {
-            if reg.contains_key(name) {
-                Some(CompiledPattern::Custom(name.to_string()))
-            } else {
-                None
-            }
-        }),
     }
 }

@@ -53,7 +53,7 @@ pub enum FieldDef {
 }
 
 /// Type alias for compiled property lists (reduces complexity).
-type CompiledProperties = Box<[(Box<str>, CompiledField)]>;
+pub type CompiledProperties = Box<[(Box<str>, CompiledField)]>;
 
 /// Pre-compiled schema for fast validation (avoids repeated string matching).
 #[derive(Debug, Clone)]
