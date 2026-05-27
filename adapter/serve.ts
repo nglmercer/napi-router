@@ -59,6 +59,13 @@ const connectionMetas = new Map<
   { data: unknown; remoteAddress: string | null }
 >();
 
+/// Stores Rust-parsed body/query per request (keyed by Request object).
+/// Allows bodyParser to skip re-parsing when Rust already parsed the data.
+const rustParsedData = new WeakMap<
+  Request,
+  { parsedBody?: string; queryParams?: Record<string, string> }
+>();
+
 export class Server {
   #raw: HttpServer;
 
@@ -304,6 +311,18 @@ export async function serve(options: ServeOptions): Promise<Server> {
       remoteAddr: requestData.remoteAddr,
     });
 
+    // Store Rust-parsed data so bodyParser can reuse it (zero duplicate parsing)
+    if (requestData.parsedBody !== null && requestData.parsedBody !== undefined) {
+      rustParsedData.set(webRequest, {
+        parsedBody: requestData.parsedBody,
+        queryParams: requestData.queryParams ?? undefined,
+      });
+    } else if (requestData.queryParams) {
+      rustParsedData.set(webRequest, {
+        queryParams: requestData.queryParams,
+      });
+    }
+
     let response: Response | undefined;
 
     try {
@@ -425,4 +444,15 @@ export async function tryServe(
   } catch (err) {
     return { server: null, error: err as Error };
   }
+}
+
+/**
+ * Get Rust-parsed data for a request (used by bodyParser to avoid re-parsing).
+ * @internal
+ */
+export function getRustParsedData(req: Request): {
+  parsedBody?: string;
+  queryParams?: Record<string, string>;
+} | undefined {
+  return rustParsedData.get(req);
 }

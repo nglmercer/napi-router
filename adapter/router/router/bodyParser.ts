@@ -1,6 +1,7 @@
 import { splitRoutePath } from "../path"
 import { parseHttpMethods, HttpMethodString } from "../method"
 import type { EndpointRoute, Request, RequestMiddleware } from "../types"
+import { getRustParsedData } from "../../serve"
 
 export interface BodyParserOptions {
     json?: boolean
@@ -10,6 +11,17 @@ export interface BodyParserOptions {
 }
 
 async function parseJsonBody(req: Request, limit?: number): Promise<unknown> {
+    // Check if Rust already parsed the body (zero-copy, no duplicate parsing)
+    const rustData = getRustParsedData(req)
+    if (rustData?.parsedBody !== undefined) {
+        // Rust provided pre-parsed JSON string — just parse it (fast V8 native)
+        try {
+            return JSON.parse(rustData.parsedBody)
+        } catch {
+            return undefined
+        }
+    }
+
     const clone = req.clone()
     const text = limit ? (await clone.text()).slice(0, limit) : await clone.text()
     try {
@@ -38,6 +50,7 @@ async function parseFormBody(req: Request, limit?: number): Promise<Record<strin
 /**
  * Register a body parsing middleware.
  * Parses the request body based on content-type and populates `req.parsedBody`.
+ * Reuses Rust-parsed JSON body when available (zero duplicate parsing).
  * @param routes The routes array to add to
  * @param method The HTTP method(s) to match
  * @param path The path to parse body on

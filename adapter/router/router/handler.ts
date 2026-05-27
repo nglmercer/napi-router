@@ -12,6 +12,7 @@ import { HttpMethod } from "../method";
 import { Param } from "./param";
 import { Context as ContextImpl } from "../context";
 import { Server } from "../../serve";
+import { getRustParsedData } from "../../serve";
 export function innerHandle(
   routes: EndpointRoute[],
   request: NRequest,
@@ -34,11 +35,26 @@ export function innerHandle(
       }
     }
   }
+
+  // Use Rust-parsed query params when available (zero duplicate parsing)
+  const rustData = getRustParsedData(req);
+  let queryParams: Record<string, string>;
   const searchParams = url.searchParams;
-  const queryParams: Record<string, string> = {};
-  for (const [key, value] of searchParams) {
-    queryParams[key] = value;
+
+  if (rustData?.queryParams) {
+    queryParams = rustData.queryParams;
+  } else {
+    queryParams = {};
+    for (const [key, value] of searchParams) {
+      queryParams[key] = value;
+    }
   }
+
+  // Store Rust-parsed body string for validator (avoids re-serialization)
+  if (rustData?.parsedBody !== undefined) {
+    (req as any)._rustParsedBody = rustData.parsedBody;
+  }
+
   req.queryParams = queryParams;
   req.query = (key?: string) => {
     if (key === undefined) {

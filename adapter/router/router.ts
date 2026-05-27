@@ -67,6 +67,11 @@ import {
   getFileFieldNames,
   getFormFields,
 } from "./router/fileUpload";
+import {
+  validate as registerValidate,
+  type RouteSchemaDefinition,
+} from "./router/validator";
+import type { Validator } from "../../index.js";
 export type ErrorHandler = (err: Error, ctx: Context) => Awaitable<void>;
 
 /**
@@ -93,6 +98,7 @@ export class Router {
   private wsHandlers?: WebSocketHandlers;
   private errorHandler?: ErrorHandler;
   private routeMeta = new Map<string, { queryParams?: QueryParamInfo[] }>();
+  private _validator?: Validator;
 
   // Expose cookie methods as static
   static parseCookies = parseCookies;
@@ -586,6 +592,78 @@ export class Router {
   ): Router {
     registerFileUpload(this.routes, method, path, options);
     return this;
+  }
+
+  /**
+   * Set a Rust Validator instance for request validation.
+   * Required before using `router.validate()`.
+   * @param validator A Validator instance from napi-router
+   * @returns The router, for chaining
+   */
+  setValidator(validator: Validator): Router {
+    this._validator = validator;
+    return this;
+  }
+
+  /**
+   * Register a validation schema for a route.
+   * Validates body, query params, and path params before the handler runs.
+   * Returns 400 with structured errors if validation fails.
+   *
+   * Requires a Validator to be set via `router.setValidator()` first.
+   *
+   * @param method The HTTP method(s) to validate on
+   * @param path The route path
+   * @param schema The schema definition for body/query/params
+   * @returns The router, for chaining
+   *
+   * @example
+   * ```ts
+   * import { Validator } from "napi-router"
+   * import { s } from "napi-router/adapter/router/router/validator"
+   *
+   * const validator = new Validator()
+   * router.setValidator(validator)
+   *
+   * router.post("/users",
+   *   router.validate("POST", "/users", {
+   *     body: {
+   *       name: s.string({ required: true, min: 2, max: 100 }),
+   *       email: s.string({ required: true, pattern: "email" }),
+   *       age: s.integer({ min: 0, max: 200 }),
+   *     },
+   *     query: {
+   *       format: s.string({ enum: ["short", "full"] }),
+   *     },
+   *   }),
+   *   async (ctx) => {
+   *     // ctx.req.parsedBody is validated and typed
+   *     const user = ctx.req.parsedBody as { name: string; email: string; age?: number }
+   *     return ctx.json({ created: true, user })
+   *   }
+   * )
+   * ```
+   */
+  validate(
+    method: "*" | HttpMethodString,
+    path: string,
+    schema: RouteSchemaDefinition,
+  ): Router {
+    if (!this._validator) {
+      throw new Error(
+        "Router.validate() requires a Validator. Call router.setValidator(validator) first.",
+      );
+    }
+    registerValidate(this.routes, this.routeMeta, method, path, schema, this._validator);
+    return this;
+  }
+
+  /**
+   * Get the Rust Validator instance associated with this router.
+   * @returns The Validator, or undefined if not set
+   */
+  getValidator(): Validator | undefined {
+    return this._validator;
   }
 
   /**

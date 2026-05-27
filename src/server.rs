@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -19,6 +19,7 @@ use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::native_response::NativeResponse;
 use crate::types::*;
+use crate::validator::ValidatorSchemas;
 use crate::websocket;
 
 type RequestTsfn =
@@ -40,6 +41,8 @@ struct ServerInner {
     conn_abort_handles: DashMap<u64, AbortHandle>,
     listen_port: AtomicU16,
     listen_addr: RwLock<Option<String>>,
+    validator_schemas: RwLock<Option<ValidatorSchemas>>,
+    auto_validate: std::sync::atomic::AtomicBool,
 }
 
 type Mutex<T> = parking_lot::Mutex<T>;
@@ -79,8 +82,25 @@ impl HttpServer {
                 conn_abort_handles: DashMap::new(),
                 listen_port: AtomicU16::new(0),
                 listen_addr: RwLock::new(None),
+                validator_schemas: RwLock::new(None),
+                auto_validate: std::sync::atomic::AtomicBool::new(false),
             }),
         }
+    }
+
+    /// Set a Validator instance for automatic request validation.
+    /// When set, the server will validate body/query/params before calling JS.
+    #[napi]
+    pub fn set_validator(&self, validator: &crate::validator::Validator) {
+        *self.inner.validator_schemas.write() = Some(validator.get_schemas());
+    }
+
+    /// Enable/disable automatic validation before JS callback.
+    #[napi]
+    pub fn set_auto_validate(&self, enabled: bool) {
+        self.inner
+            .auto_validate
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
     }
 
     #[napi(ts_args_type = "callback: (data: RequestData) => void")]
@@ -660,6 +680,89 @@ async fn handle_request(
         )
     };
 
+    // Parse JSON body in Rust (zero-copy from bytes) — avoids JS req.clone().text() + JSON.parse()
+    let parsed_body_value: Option<serde_json::Value> = if let Some(ref body_bytes) = body_bytes {
+        if is_json_content_type(&headers) {
+            serde_json::from_slice(body_bytes).ok()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    // Serialize to string for JS (fast JSON.stringify in Rust, avoids UTF-8 decode in JS)
+    let parsed_body: Option<String> = parsed_body_value
+        .as_ref()
+        .and_then(|v| serde_json::to_string(v).ok());
+
+    // Parse query params in Rust (avoids JS new URL().searchParams iteration)
+    let query_params = parse_query_from_url(&url);
+
+    // Auto-validate against registered schemas before calling JS
+    if state.auto_validate.load(std::sync::atomic::Ordering::Relaxed) {
+        let schemas_guard = state.validator_schemas.read();
+        if let Some(ref schemas) = *schemas_guard {
+            let route_key = format!("{}:{}", method, path);
+            if let Some(schema) = schemas.get(&route_key) {
+                // Validate body
+                if let (Some(ref body_schema), Some(ref parsed)) = (&schema.body, &parsed_body_value) {
+                    let errors =
+                        crate::schema::validate_json_value(parsed, body_schema, "body");
+                    if !errors.is_empty() {
+                        let error_json = serde_json::json!({
+                            "errors": errors.iter().map(|e| {
+                                serde_json::json!({
+                                    "field": e.field,
+                                    "message": e.message,
+                                    "code": e.code
+                                })
+                            }).collect::<Vec<_>>()
+                        });
+                        let body = serde_json::to_vec(&error_json).unwrap_or_default();
+                        return Ok(Response::builder()
+                            .status(StatusCode::BAD_REQUEST)
+                            .header("content-type", "application/json")
+                            .body(Full::new(Bytes::from(body)))
+                            .unwrap());
+                    }
+                }
+
+                // Validate query params
+                if let Some(ref query_schema) = schema.query {
+                    if let Some(ref params) = query_params {
+                        let errors = crate::schema::validate_query_string(params, query_schema);
+                        if !errors.is_empty() {
+                            let error_json = serde_json::json!({
+                                "errors": errors.iter().map(|e| {
+                                    serde_json::json!({
+                                        "field": e.field,
+                                        "message": e.message,
+                                        "code": e.code
+                                    })
+                                }).collect::<Vec<_>>()
+                            });
+                            let body = serde_json::to_vec(&error_json).unwrap_or_default();
+                            return Ok(Response::builder()
+                                .status(StatusCode::BAD_REQUEST)
+                                .header("content-type", "application/json")
+                                .body(Full::new(Bytes::from(body)))
+                                .unwrap());
+                        }
+                    }
+                }
+
+                // Validate path params
+                if let Some(ref params_schema) = schema.params {
+                    // Path params are extracted in JS after route matching,
+                    // so we can only validate if they're in the URL path segments.
+                    // For now, skip path param validation in auto mode.
+                    // Users can validate path params in JS using validator.validateParams()
+                    let _ = params_schema;
+                }
+            }
+        }
+    }
+
     let request_id = next_request_id();
 
     let request_data = RequestData {
@@ -670,6 +773,8 @@ async fn handle_request(
         body: body_bytes,
         remote_addr: remote_addr.clone(),
         request_id,
+        parsed_body,
+        query_params,
     };
 
     state.request_addrs.insert(request_id, remote_addr.clone());
@@ -844,4 +949,64 @@ async fn create_reusable_listener(addr: SocketAddr) -> std::io::Result<TcpListen
 
     let std_listener: std::net::TcpListener = socket.into();
     TcpListener::from_std(std_listener)
+}
+
+fn is_json_content_type(headers: &[String]) -> bool {
+    for i in (0..headers.len()).step_by(2) {
+        if headers[i].eq_ignore_ascii_case("content-type") {
+            return headers[i + 1].contains("application/json");
+        }
+    }
+    false
+}
+
+fn parse_query_from_url(url: &str) -> Option<HashMap<String, String>> {
+    let query_start = url.find('?')?;
+    let query_str = &url[query_start + 1..];
+    if query_str.is_empty() {
+        return None;
+    }
+    let mut params = HashMap::new();
+    for pair in query_str.split('&') {
+        if let Some(eq_pos) = pair.find('=') {
+            let key = &pair[..eq_pos];
+            let value = &pair[eq_pos + 1..];
+            params.insert(
+                urldecode(key),
+                urldecode(value),
+            );
+        } else if !pair.is_empty() {
+            params.insert(urldecode(pair), String::new());
+        }
+    }
+    if params.is_empty() {
+        None
+    } else {
+        Some(params)
+    }
+}
+
+fn urldecode(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(
+                std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""),
+                16,
+            ) {
+                result.push(byte as char);
+                i += 3;
+                continue;
+            }
+        }
+        if bytes[i] == b'+' {
+            result.push(' ');
+        } else {
+            result.push(bytes[i] as char);
+        }
+        i += 1;
+    }
+    result
 }

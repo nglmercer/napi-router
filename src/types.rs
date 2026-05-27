@@ -11,6 +11,11 @@ pub struct RequestData {
     pub body: Option<Vec<u8>>,
     pub remote_addr: String,
     pub request_id: u32,
+    /// Pre-parsed JSON body serialized as string. Null if body is not JSON or absent.
+    /// JS can do JSON.parse(parsedBody) — faster than req.clone().text() + JSON.parse()
+    pub parsed_body: Option<String>,
+    /// Query parameters parsed from URL in Rust.
+    pub query_params: Option<std::collections::HashMap<String, String>>,
 }
 
 #[napi(object)]

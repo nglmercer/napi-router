@@ -2,6 +2,13 @@
 /* eslint-disable */
 export declare class HttpServer {
   constructor()
+  /**
+   * Set a Validator instance for automatic request validation.
+   * When set, the server will validate body/query/params before calling JS.
+   */
+  setValidator(validator: Validator): void
+  /** Enable/disable automatic validation before JS callback. */
+  setAutoValidate(enabled: boolean): void
   onRequest(callback: (data: RequestData) => void): void
   onWsEvent(callback: (event: WsEvent) => void): void
   listen(port: number, hostname?: string | undefined | null): Promise<ServerInfo>
@@ -53,6 +60,38 @@ export declare class NativeResponse {
   reset(): this
 }
 
+export declare class Validator {
+  constructor()
+  /**
+   * Register a validation schema for a route.
+   * route_key format: "METHOD:/path" (e.g. "POST:/users")
+   * schema_json: JSON string with { body?, query?, params? } definitions
+   */
+  addSchema(routeKey: string, schemaJson: string): void
+  /**
+   * Validate a JSON body string against the registered schema.
+   * Returns validated data as JSON string on success.
+   */
+  validateBody(routeKey: string, bodyJson: string): ValidationResult
+  /**
+   * Validate a pre-serialized JSON body value (from Rust body parsing).
+   * body_json: the body as a JSON string (already parsed by Rust)
+   */
+  validateBodyValue(routeKey: string, bodyJson: string): ValidationResult
+  /** Validate query parameters against the registered schema. */
+  validateQuery(routeKey: string, query: Record<string, string>): ValidationResult
+  /** Validate path parameters against the registered schema. */
+  validateParams(routeKey: string, params: Record<string, string>): ValidationResult
+  /** Check if a schema exists for a route. */
+  hasSchema(routeKey: string): boolean
+  /** Remove a schema for a route. */
+  removeSchema(routeKey: string): boolean
+  /** Clear all schemas. */
+  clear(): void
+  /** Get the number of registered schemas. */
+  schemaCount(): number
+}
+
 export interface RequestData {
   method: string
   url: string
@@ -62,6 +101,13 @@ export interface RequestData {
   body?: Array<number>
   remoteAddr: string
   requestId: number
+  /**
+   * Pre-parsed JSON body serialized as string. Null if body is not JSON or absent.
+   * JS can do JSON.parse(parsedBody) — faster than req.clone().text() + JSON.parse()
+   */
+  parsedBody?: string
+  /** Query parameters parsed from URL in Rust. */
+  queryParams?: Record<string, string>
 }
 
 export interface ResponseData {
@@ -82,6 +128,19 @@ export interface SocketAddress {
   address: string
   family: string
   port: number
+}
+
+export interface ValidationErr {
+  field: string
+  message: string
+  code: string
+}
+
+export interface ValidationResult {
+  success: boolean
+  errors?: Array<ValidationErr>
+  /** Serialized validated data (JSON string). Null if validation failed or no data. */
+  data?: string
 }
 
 export interface WsEvent {

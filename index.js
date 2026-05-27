@@ -578,3 +578,4 @@ if (!nativeBinding) {
 module.exports = nativeBinding
 module.exports.HttpServer = nativeBinding.HttpServer
 module.exports.NativeResponse = nativeBinding.NativeResponse
+module.exports.Validator = nativeBinding.Validator
