@@ -85,6 +85,7 @@ export function mergeRequestMiddlewares(
         return;
       }
     }
+    return undefined;
   };
 
   const merged = baseMerged as unknown as MergedRequestMiddleware;

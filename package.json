@@ -27,39 +27,44 @@
   "types": "index.d.ts",
   "exports": {
     ".": {
+      "types": "./index.d.ts",
       "require": "./index.js",
       "default": "./index.js"
     },
     "./adapter": {
-      "import": "./adapter/serve.ts",
-      "default": "./adapter/serve.ts"
+      "types": "./dist/adapter/serve.d.ts",
+      "import": "./dist/adapter/serve.js",
+      "default": "./dist/adapter/serve.js"
     },
     "./adapter/serve": {
-      "import": "./adapter/serve.ts",
-      "default": "./adapter/serve.ts"
+      "types": "./dist/adapter/serve.d.ts",
+      "import": "./dist/adapter/serve.js",
+      "default": "./dist/adapter/serve.js"
     },
     "./adapter/router": {
-      "import": "./adapter/router/router.ts",
-      "default": "./adapter/router/router.ts"
+      "types": "./dist/adapter/router/router.d.ts",
+      "import": "./dist/adapter/router/router.js",
+      "default": "./dist/adapter/router/router.js"
     },
     "./adapter/router/validator": {
-      "import": "./adapter/router/router/validator.ts",
-      "default": "./adapter/router/router/validator.ts"
+      "types": "./dist/adapter/router/router/validator.d.ts",
+      "import": "./dist/adapter/router/router/validator.js",
+      "default": "./dist/adapter/router/router/validator.js"
     }
   },
   "files": [
     "index.js",
     "index.d.ts",
     "*.node",
-    "adapter/**/*.ts",
-    "!adapter/**/tests/**",
+    "dist/",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "napi build --platform --release",
     "build:debug": "napi build --platform",
-    "clean": "napi clean && cargo clean",
+    "build:ts": "tsc -p tsconfig.build.json",
+    "clean": "napi clean && cargo clean && rm -rf dist",
     "test": "bun test",
     "dev": "node --watch examples/dev.ts",
     "bench": "bun bench/compare.ts",
@@ -69,7 +74,7 @@
     "type-check": "tsc --noEmit",
     "format": "prettier --write index.js index.d.ts adapter/**/*.ts examples/",
     "lint": "rustup run stable cargo clippy -- -D warnings",
-    "prepublishOnly": "npm run lint && npm run test && npm run build"
+    "prepublishOnly": "npm run lint && npm run test && npm run build && npm run build:ts"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.5.1",

@@ -16,6 +16,7 @@
     "removeComments": true,
     "sourceMap": false,
     "outDir": "./dist",
+    "rootDir": ".",
     "lib": ["ES2022", "DOM"],
     "resolveJsonModule": true,
     "declaration": true,
