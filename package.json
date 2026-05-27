@@ -1,6 +1,6 @@
 {
   "name": "napi-router",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Bun-compatible HTTP server powered by Rust via NAPI — works in Node.js, Bun, and Deno",
   "keywords": [
     "napi",
@@ -11,7 +11,10 @@
     "websocket",
     "bun-compatible",
     "bun",
-    "hono"
+    "hono",
+    "validator",
+    "schema",
+    "validation"
   ],
   "homepage": "https://github.com/nglmercer/napi-router#readme",
   "repository": {
@@ -34,13 +37,22 @@
     "./adapter/serve": {
       "import": "./adapter/serve.ts",
       "default": "./adapter/serve.ts"
+    },
+    "./adapter/router": {
+      "import": "./adapter/router/router.ts",
+      "default": "./adapter/router/router.ts"
+    },
+    "./adapter/router/validator": {
+      "import": "./adapter/router/router/validator.ts",
+      "default": "./adapter/router/router/validator.ts"
     }
   },
   "files": [
     "index.js",
     "index.d.ts",
     "*.node",
-    "adapter/",
+    "adapter/**/*.ts",
+    "!adapter/**/tests/**",
     "README.md",
     "LICENSE"
   ],
@@ -51,15 +63,18 @@
     "test": "bun test",
     "dev": "node --watch examples/dev.ts",
     "bench": "bun bench/compare.ts",
-    "build:multi": "bun scripts/build_multiplatform.ts",
     "bench:simple": "bun bench/server.ts",
+    "bench:validator": "bun bench/validator.bench.ts",
+    "build:multi": "bun scripts/build_multiplatform.ts",
     "type-check": "tsc --noEmit",
     "format": "prettier --write index.js index.d.ts adapter/**/*.ts examples/",
-    "lint": "rustup run stable cargo clippy -- -D warnings"
+    "lint": "rustup run stable cargo clippy -- -D warnings",
+    "prepublishOnly": "npm run lint && npm run test && npm run build"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.5.1",
-    "typescript": "^5.6.2"
+    "typescript": "^5.6.2",
+    "hono": "^4.12.22"
   },
   "napi": {
     "binaryName": "napi-router",
@@ -71,8 +86,5 @@
       "x86_64-unknown-linux-gnu",
       "aarch64-unknown-linux-gnu"
     ]
-  },
-  "dependencies": {
-    "hono": "^4.12.22"
   }
 }
