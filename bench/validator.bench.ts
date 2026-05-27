@@ -280,9 +280,9 @@ async function benchHttpFlow() {
     "/api/users",
     routerRustMiddleware.validate({
       body: {
-        name: s.string({ required: true, min: 2 }),
-        email: s.string({ required: true, pattern: "email" }),
-        age: s.integer({ min: 0, max: 200 }),
+        name: s.string().required().min(2),
+        email: s.string().required().pattern("email"),
+        age: s.integer().min(0).max(200),
       },
     }),
     (ctx) => {

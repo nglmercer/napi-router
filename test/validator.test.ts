@@ -3,7 +3,7 @@
  *
  * Tests for Rust-side validation:
  *   - Validator class (addSchema, validateBody, validateQuery, validateParams)
- *   - Schema builder (s.string, s.object, etc)
+ *   - Schema builder (s.string().min().max(), etc.)
  *   - Router.validate() middleware (auto-detect method/path)
  *   - Zero-duplicate parsing (bodyParser reuses Rust data)
  */
@@ -412,58 +412,109 @@ describe("Validator — nested objects", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Schema builder (s.*) helpers
+// Schema builder — fluent API (s.string().min().max(), etc.)
 // ---------------------------------------------------------------------------
 
-describe("Schema builder s.*", () => {
+describe("Schema builder — fluent API", () => {
   it("s.string() creates correct schema", () => {
-    const schema = s.string({ required: true, min: 2, max: 100 });
+    const schema = s.string().required().min(2).max(100).build();
     expect(schema.type).toBe("string");
     expect(schema.required).toBe(true);
     expect(schema.min).toBe(2);
     expect(schema.max).toBe(100);
   });
 
+  it("s.string().pattern() creates correct schema", () => {
+    const schema = s.string().required().pattern("email").build();
+    expect(schema.type).toBe("string");
+    expect(schema.required).toBe(true);
+    expect(schema.pattern).toBe("email");
+  });
+
+  it("s.string().enum() creates correct schema", () => {
+    const schema = s.string().required().enum("admin", "user", "guest").build();
+    expect(schema.type).toBe("string");
+    expect(schema.required).toBe(true);
+    expect(schema.enum).toEqual(["admin", "user", "guest"]);
+  });
+
   it("s.number() creates correct schema", () => {
-    const schema = s.number({ min: 0, max: 100, int: true });
+    const schema = s.number().min(0).max(100).build();
     expect(schema.type).toBe("number");
-    expect(schema.int).toBe(true);
+    expect(schema.min).toBe(0);
+    expect(schema.max).toBe(100);
   });
 
   it("s.integer() creates correct schema", () => {
-    const schema = s.integer({ min: 1 });
+    const schema = s.integer().required().min(1).build();
     expect(schema.type).toBe("integer");
+    expect(schema.required).toBe(true);
     expect(schema.min).toBe(1);
+    expect(schema.int).toBe(true);
+  });
+
+  it("s.number().integer() creates correct schema", () => {
+    const schema = s.number().integer().min(0).build();
+    expect(schema.type).toBe("integer");
+    expect(schema.int).toBe(true);
   });
 
   it("s.boolean() creates correct schema", () => {
-    const schema = s.boolean({ required: true });
+    const schema = s.boolean().required().build();
     expect(schema.type).toBe("boolean");
     expect(schema.required).toBe(true);
   });
 
   it("s.object() creates correct schema", () => {
     const schema = s.object({
-      name: s.string({ required: true }),
-      age: s.integer({ min: 0 }),
-    });
+      name: s.string().required(),
+      age: s.integer().min(0),
+    }).build();
     expect(schema.type).toBe("object");
     expect(schema.properties).toBeDefined();
     expect(schema.properties!.name.type).toBe("string");
+    expect(schema.properties!.name.required).toBe(true);
     expect(schema.properties!.age.type).toBe("integer");
+    expect(schema.properties!.age.min).toBe(0);
   });
 
   it("s.array() creates correct schema", () => {
-    const schema = s.array(s.string(), { min: 1, max: 10 });
+    const schema = s.array(s.string()).min(1).max(10).build();
     expect(schema.type).toBe("array");
     expect(schema.items!.type).toBe("string");
     expect(schema.min).toBe(1);
     expect(schema.max).toBe(10);
   });
+
+  it("s.array(s.object()) creates correct nested schema", () => {
+    const schema = s.array(
+      s.object({
+        id: s.string().required(),
+        qty: s.integer().required().min(1),
+      })
+    ).min(1).build();
+    expect(schema.type).toBe("array");
+    expect(schema.items!.type).toBe("object");
+    expect(schema.items!.properties!.id.type).toBe("string");
+    expect(schema.items!.properties!.qty.min).toBe(1);
+  });
+
+  it("builder can be used directly in schema definition", () => {
+    // This tests that builders are auto-resolved in RouteSchemaDefinition
+    const schema = {
+      body: {
+        name: s.string().required().min(2),
+        age: s.integer().min(0),
+      },
+    };
+    // Should not throw when building
+    expect(schema.body.name.build().type).toBe("string");
+    expect(schema.body.age.build().min).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
-// Router.validate() middleware — simplified API (no method/path needed)
+// Router.validate() middleware — fluent API
 // ---------------------------------------------------------------------------
 
 describe("Router.validate() middleware", () => {
@@ -478,8 +529,8 @@ describe("Router.validate() middleware", () => {
       "/api/users",
       router.validate({
         body: {
-          name: s.string({ required: true, min: 2 }),
-          email: s.string({ required: true, pattern: "email" }),
+          name: s.string().required().min(2),
+          email: s.string().required().pattern("email"),
         },
       }),
       (ctx) => {
@@ -531,8 +582,8 @@ describe("Router.validate() middleware", () => {
       "/api/search",
       router.validate({
         query: {
-          q: s.string({ required: true, min: 1 }),
-          page: s.integer({ min: 1 }),
+          q: s.string().required().min(1),
+          page: s.integer().min(1),
         },
       }),
       (ctx) => {
@@ -565,7 +616,7 @@ describe("Router.validate() middleware", () => {
       "/api/users/:id",
       router.validate({
         params: {
-          id: s.integer({ required: true, min: 1 }),
+          id: s.integer().required().min(1),
         },
       }),
       (ctx) => {
@@ -588,7 +639,7 @@ describe("Router.validate() middleware", () => {
     const router = new Router();
     expect(() => {
       router.validate({
-        query: { q: s.string({ required: true }) },
+        query: { q: s.string().required() },
       });
     }).toThrow("Router.validate() requires a Validator");
   });
@@ -603,7 +654,7 @@ describe("Router.validate() middleware", () => {
     router.post(
       "/api/users",
       router.validate({
-        body: { name: s.string({ required: true }) },
+        body: { name: s.string().required() },
       }),
       (ctx) => ctx.json({ type: "user" }),
     );
@@ -611,7 +662,7 @@ describe("Router.validate() middleware", () => {
     router.post(
       "/api/posts",
       router.validate({
-        body: { title: s.string({ required: true, min: 5 }) },
+        body: { title: s.string().required().min(5) },
       }),
       (ctx) => ctx.json({ type: "post" }),
     );
@@ -643,6 +694,59 @@ describe("Router.validate() middleware", () => {
         { headers: { "content-type": "application/json" } },
       );
       expect(res3.status).toBe(200);
+    });
+  });
+
+  it("validates nested objects with fluent API", async () => {
+    const port = nextPort("HTTP");
+    const validator = new Validator();
+    const router = new Router();
+    router.setValidator(validator);
+    router.body("*", "/api/*");
+
+    router.post(
+      "/api/orders",
+      router.validate({
+        body: {
+          items: s.array(
+            s.object({
+              product_id: s.string().required(),
+              quantity: s.integer().required().min(1),
+            })
+          ).required().min(1),
+          shipping: s.object({
+            address: s.string().required(),
+            city: s.string().required(),
+          }).required(),
+        },
+      }),
+      (ctx) => ctx.json({ ok: true }),
+    );
+
+    await withServer(port, { fetch: router.handle }, async (server) => {
+      // Valid nested body → 200
+      const res1 = await post(
+        server,
+        "/api/orders",
+        JSON.stringify({
+          items: [{ product_id: "abc", quantity: 2 }],
+          shipping: { address: "123 Main St", city: "Springfield" },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+      expect(res1.status).toBe(200);
+
+      // Missing nested required field → 400
+      const res2 = await post(
+        server,
+        "/api/orders",
+        JSON.stringify({
+          items: [{ quantity: 2 }],
+          shipping: { address: "123 Main St", city: "Springfield" },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+      expect(res2.status).toBe(400);
     });
   });
 });

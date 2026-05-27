@@ -164,13 +164,13 @@ router.body("*", "/api/*");
 router.post("/users",
   router.validate({
     body: {
-      name: s.string({ required: true, min: 2, max: 100 }),
-      email: s.string({ required: true, pattern: "email" }),
-      age: s.integer({ min: 0, max: 200 }),
-      role: s.string({ enum: ["admin", "user", "guest"] }),
+      name: s.string().required().min(2).max(100),
+      email: s.string().required().pattern("email"),
+      age: s.integer().min(0).max(200),
+      role: s.string().enum("admin", "user", "guest"),
     },
     query: {
-      format: s.string({ enum: ["short", "full"] }),
+      format: s.string().enum("short", "full"),
     },
   }),
   async (ctx) => {
@@ -226,53 +226,57 @@ When validation fails, the server returns `400 Bad Request` with structured erro
 
 ### Schema Builder (`s.*`)
 
-Fluent API for defining field schemas:
+Fluent API for defining field schemas with method chaining:
 
 ```ts
 import { s } from "napi-router/adapter/router/router/validator";
 
 // String
-s.string({ required: true, min: 2, max: 100, pattern: "email", enum: ["a", "b"] })
+s.string().required().min(2).max(100)
+s.string().required().pattern("email")
+s.string().required().enum("admin", "user", "guest")
 
 // Number (float)
-s.number({ min: 0, max: 100, int: true })
+s.number().min(0).max(100)
 
 // Integer
-s.integer({ min: 1, max: 1000 })
+s.integer().required().min(1).max(1000)
+
+// Number constrained to integer
+s.number().integer().min(0)
 
 // Boolean
-s.boolean({ required: true })
+s.boolean().required()
 
 // Object with nested properties
 s.object({
-  street: s.string({ required: true }),
-  city: s.string({ required: true }),
-  zip: s.string({ pattern: "numeric" }),
+  street: s.string().required(),
+  city: s.string().required(),
+  zip: s.string().pattern("numeric"),
 })
 
 // Array with item schema
-s.array(s.string(), { min: 1, max: 10 })
+s.array(s.string()).min(1).max(10)
 
 // Array of objects
 s.array(
   s.object({
-    product_id: s.string({ required: true }),
-    quantity: s.integer({ required: true, min: 1 }),
-  }),
-  { min: 1 }
-)
+    product_id: s.string().required(),
+    quantity: s.integer().required().min(1),
+  })
+).min(1)
 ```
 
 ### Schema Types
 
-| Type | Options | Description |
+| Type | Methods | Description |
 |------|---------|-------------|
-| `string` | `required`, `min`, `max`, `pattern`, `enum` | String value with length/pattern constraints |
-| `number` | `required`, `min`, `max`, `int` | Float number, optionally integer-only |
-| `integer` | `required`, `min`, `max` | Integer number (enforced) |
-| `boolean` | `required` | Boolean value |
-| `object` | `required`, `properties` | Nested object with field schemas |
-| `array` | `required`, `items`, `min`, `max` | Array with item schema and length constraints |
+| `s.string()` | `.required()`, `.min(n)`, `.max(n)`, `.pattern(name)`, `.enum(...values)`, `.default(v)` | String value with length/pattern constraints |
+| `s.number()` | `.required()`, `.min(n)`, `.max(n)`, `.integer()`, `.default(v)` | Float number, optionally integer-only |
+| `s.integer()` | `.required()`, `.min(n)`, `.max(n)`, `.default(v)` | Integer number (enforced) |
+| `s.boolean()` | `.required()`, `.default(v)` | Boolean value |
+| `s.object(props)` | `.required()`, `.default(v)` | Nested object with field schemas |
+| `s.array(items)` | `.required()`, `.min(n)`, `.max(n)`, `.default(v)` | Array with item schema and length constraints |
 
 ### Built-in Patterns
 
@@ -337,9 +341,9 @@ router.setValidator(validator);
 // Method and path are auto-detected from the route registration
 router.post("/users",
   router.validate({
-    body: { name: s.string({ required: true }) },
-    query: { format: s.string({ enum: ["short", "full"] }) },
-    params: { id: s.integer({ min: 1 }) },
+    body: { name: s.string().required() },
+    query: { format: s.string().enum("short", "full") },
+    params: { id: s.integer().required().min(1) },
   }),
   handler
 );
