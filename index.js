@@ -577,3 +577,4 @@ if (!nativeBinding) {
 
 module.exports = nativeBinding
 module.exports.HttpServer = nativeBinding.HttpServer
+module.exports.NativeResponse = nativeBinding.NativeResponse

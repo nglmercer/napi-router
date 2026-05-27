@@ -17,6 +17,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::{AbortHandle, JoinHandle};
 
+use crate::native_response::NativeResponse;
 use crate::types::*;
 use crate::websocket;
 
@@ -212,6 +213,49 @@ impl HttpServer {
                 connection_id: None,
             };
             let _ = tx.send(response);
+        }
+    }
+
+    /// Direct buffer path — accepts Uint8Array / Buffer (zero-copy bytes from JS).
+    #[napi]
+    pub fn send_response_buffer_direct(
+        &self,
+        request_id: u32,
+        status: u16,
+        headers: Vec<String>,
+        body: Option<Buffer>,
+    ) {
+        self.inner.request_addrs.remove(&request_id);
+        if let Some((_, tx)) = self.inner.pending.remove(&request_id) {
+            let response = ResponseData {
+                status,
+                headers,
+                body: body.map(|b| b.to_vec()),
+                upgrade: None,
+                connection_id: None,
+            };
+            let _ = tx.send(response);
+        }
+    }
+
+    /// Zero-copy submission of a NativeResponse. Takes data via std::mem::take.
+    #[napi]
+    pub fn submit_native_response(&self, request_id: u32, response: &NativeResponse) {
+        self.inner.request_addrs.remove(&request_id);
+        if let Some((_, tx)) = self.inner.pending.remove(&request_id) {
+            let mut inner = response.inner.lock();
+            let response_data = ResponseData {
+                status: inner.status,
+                headers: std::mem::take(&mut inner.headers),
+                body: if inner.body.is_empty() {
+                    None
+                } else {
+                    Some(std::mem::take(&mut inner.body))
+                },
+                upgrade: None,
+                connection_id: None,
+            };
+            let _ = tx.send(response_data);
         }
     }
 

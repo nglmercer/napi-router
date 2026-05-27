@@ -1,4 +1,5 @@
-import { HttpServer, RequestData } from "../index.js";
+import { HttpServer, NativeResponse, RequestData } from "../index.js";
+import { RawResponse } from "./router/rawResponse.js";
 
 export interface ServerWebSocket {
   readonly id: string;
@@ -43,7 +44,7 @@ export interface ServeOptions {
   fetch(
     request: Request,
     server: Server,
-  ): Response | Promise<Response> | undefined;
+  ): Response | Promise<Response | NativeResponse> | NativeResponse | undefined;
   websocket?: WebSocketHandlers;
   error?(error: Error): Response | Promise<Response>;
 }
@@ -158,14 +159,14 @@ function toWebRequest(data: RequestData, baseUrl: string): Request {
   const url = data.url[0] === "/" ? `${baseUrl}${data.url}` : data.url;
 
   const h = data.headers;
-  const headersObj: Record<string, string> = {};
+  const headerPairs: [string, string][] = [];
   for (let i = 0; i < h.length; i += 2) {
-    headersObj[h[i]] = h[i + 1];
+    headerPairs.push([h[i], h[i + 1]]);
   }
 
   const init: RequestInit = {
     method: data.method,
-    headers: headersObj,
+    headers: headerPairs,
   };
 
   if (data.body != null && data.method !== "GET" && data.method !== "HEAD") {
@@ -303,9 +304,44 @@ export async function serve(options: ServeOptions): Promise<Server> {
       remoteAddr: requestData.remoteAddr,
     });
 
-    let response: Response;
+    let response: Response | undefined;
+
     try {
       const result = await fetchHandler(webRequest, server);
+
+      // NativeResponse path — fully Rust-backed, zero-copy data extraction
+      if (result instanceof NativeResponse) {
+        raw.submitNativeResponse(requestId, result);
+        return;
+      }
+
+      // RawResponse path — bypasses Response object creation entirely
+      if (RawResponse.isRawResponse(result)) {
+        const body = result.body;
+        if (typeof body === "string") {
+          raw.sendResponseText(
+            requestId,
+            result.statusCode,
+            result.headers,
+            body,
+          );
+        } else if (body instanceof Uint8Array) {
+          raw.sendResponseBufferDirect(
+            requestId,
+            result.statusCode,
+            result.headers,
+            Buffer.from(body),
+          );
+        } else {
+          raw.sendResponseBufferDirect(
+            requestId,
+            result.statusCode,
+            result.headers,
+          );
+        }
+        return;
+      }
+
       if (!(result instanceof Response)) {
         response = new Response(
           "Internal Server Error: fetch handler must return a Response",
@@ -326,6 +362,8 @@ export async function serve(options: ServeOptions): Promise<Server> {
         response = new Response("Internal Server Error", { status: 500 });
       }
     }
+
+    if (!response) return;
 
     const headers: string[] = [];
     response.headers.forEach((value, key) => {
@@ -357,19 +395,21 @@ export async function serve(options: ServeOptions): Promise<Server> {
       }
     }
 
-    let body: number[] | undefined;
     if (response.body) {
       const ab = await response.arrayBuffer();
       if (ab.byteLength > 0) {
-        body = Array.from(new Uint8Array(ab));
+        raw.sendResponseBufferDirect(
+          requestId,
+          response.status,
+          headers,
+          Buffer.from(ab),
+        );
+      } else {
+        raw.sendResponseBufferDirect(requestId, response.status, headers);
       }
+    } else {
+      raw.sendResponseBufferDirect(requestId, response.status, headers);
     }
-
-    raw.sendResponse(requestId, {
-      status: response.status,
-      headers,
-      body,
-    });
   });
 
   await raw.listen(port, hostname);

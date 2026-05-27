@@ -9,6 +9,10 @@ export declare class HttpServer {
   sendResponse(requestId: number, response: ResponseData): void
   sendResponseText(requestId: number, status: number, headers: Array<string>, body: string): void
   sendResponseBuffer(requestId: number, status: number, headers: Array<string>, body: Array<number>): void
+  /** Direct buffer path — accepts Uint8Array / Buffer (zero-copy bytes from JS). */
+  sendResponseBufferDirect(requestId: number, status: number, headers: Array<string>, body?: Buffer | undefined | null): void
+  /** Zero-copy submission of a NativeResponse. Takes data via std::mem::take. */
+  submitNativeResponse(requestId: number, response: NativeResponse): void
   /**
    * Binary protocol: buffer contains [status:u16 LE][header_section_len:u32 LE] +
    * [num_strings:u32 LE] + alternating (key_len:u32 LE, key_bytes, val_len:u32 LE, val_bytes) + body
@@ -31,6 +35,22 @@ export declare class HttpServer {
   get url(): string
   upgrade(requestId: number): string | null
   stop(closeActiveConnections?: boolean | undefined | null): Promise<void>
+}
+
+/**
+ * Rust-native response builder. Data stays in Rust memory — no JS object overhead.
+ * Use with `HttpServer::submit_native_response` for zero-copy submission.
+ */
+export declare class NativeResponse {
+  constructor()
+  status(code: number): this
+  header(name: string, value: string): this
+  text(data: string): this
+  json(data: string): this
+  html(data: string): this
+  setBodyBuffer(data: Buffer): this
+  redirect(url: string, status?: number | undefined | null): this
+  reset(): this
 }
 
 export interface RequestData {

@@ -8,12 +8,21 @@
  */
 
 import { serve } from "../adapter/serve.js";
+import { NativeResponse } from "../index.js";
 import type { Server } from "../adapter/serve.js";
 
 interface BenchResult {
   totalRequests: number;
   rps: number;
-  latency: { min: number; p50: number; p75: number; p90: number; p99: number; max: number; avg: number };
+  latency: {
+    min: number;
+    p50: number;
+    p75: number;
+    p90: number;
+    p99: number;
+    max: number;
+    avg: number;
+  };
   throughputMBs: number;
   errors: number;
   durationMs: number;
@@ -26,14 +35,23 @@ function knownBodyBytes(res: Response): number {
   return body ? 0 : 0;
 }
 
-async function bench(fn: () => Promise<Response>, connections: number, duration: number, warmupSec = 0): Promise<BenchResult> {
+async function bench(
+  fn: () => Promise<Response>,
+  connections: number,
+  duration: number,
+  warmupSec = 0,
+): Promise<BenchResult> {
   if (warmupSec > 0) {
     const warmupEnd = performance.now() + warmupSec * 1000;
     await Promise.all(
       Array.from({ length: connections }, () =>
         (async () => {
           while (performance.now() < warmupEnd) {
-            try { await fn(); } catch { /* ok */ }
+            try {
+              await fn();
+            } catch {
+              /* ok */
+            }
           }
         })(),
       ),
@@ -65,12 +83,20 @@ async function bench(fn: () => Promise<Response>, connections: number, duration:
   const elapsed = performance.now() - start;
 
   if (latencies.length === 0) {
-    return { totalRequests: 0, rps: 0, durationMs: elapsed, latency: { min: 0, p50: 0, p75: 0, p90: 0, p99: 0, max: 0, avg: 0 }, throughputMBs: 0, errors };
+    return {
+      totalRequests: 0,
+      rps: 0,
+      durationMs: elapsed,
+      latency: { min: 0, p50: 0, p75: 0, p90: 0, p99: 0, max: 0, avg: 0 },
+      throughputMBs: 0,
+      errors,
+    };
   }
 
   latencies.sort((a, b) => a - b);
   const n = latencies.length;
-  const idx = (p: number) => Math.max(0, Math.min(n - 1, Math.floor(n * p / 100)));
+  const idx = (p: number) =>
+    Math.max(0, Math.min(n - 1, Math.floor((n * p) / 100)));
   const sum = latencies.reduce((a, b) => a + b, 0);
 
   return {
@@ -86,21 +112,26 @@ async function bench(fn: () => Promise<Response>, connections: number, duration:
       max: latencies[n - 1],
       avg: sum / n,
     },
-    throughputMBs: (totalBytes / elapsed) * 1000 / 1024 / 1024,
+    throughputMBs: ((totalBytes / elapsed) * 1000) / 1024 / 1024,
     errors,
   };
 }
 
 function printResult(name: string, r: BenchResult): void {
   const gap = "  ";
-  const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : n.toFixed(0);
+  const fmt = (n: number) =>
+    n >= 1000 ? `${(n / 1000).toFixed(1)}k` : n.toFixed(0);
   console.log(gap + "\u2500".repeat(46));
-  console.log(`${gap}Requests:  ${fmt(r.totalRequests)} total  \u2192  ${r.rps.toFixed(0)} req/s`);
   console.log(
-    `${gap}Latency:   avg ${r.latency.avg.toFixed(2)} ms  p50 ${r.latency.p50.toFixed(2)} ms  p99 ${r.latency.p99.toFixed(2)} ms  max ${r.latency.max.toFixed(2)} ms`,  // eslint-disable-line
+    `${gap}Requests:  ${fmt(r.totalRequests)} total  \u2192  ${r.rps.toFixed(0)} req/s`,
+  );
+  console.log(
+    `${gap}Latency:   avg ${r.latency.avg.toFixed(2)} ms  p50 ${r.latency.p50.toFixed(2)} ms  p99 ${r.latency.p99.toFixed(2)} ms  max ${r.latency.max.toFixed(2)} ms`, // eslint-disable-line
   );
   console.log(`${gap}Throughput: ${r.throughputMBs.toFixed(2)} MB/s`);
-  console.log(`${gap}Errors:    ${r.errors}  Duration: ${(r.durationMs / 1000).toFixed(1)}s`);
+  console.log(
+    `${gap}Errors:    ${r.errors}  Duration: ${(r.durationMs / 1000).toFixed(1)}s`,
+  );
 }
 
 async function main(): Promise<void> {
@@ -112,6 +143,14 @@ async function main(): Promise<void> {
     hostname: "127.0.0.1",
     async fetch(req) {
       const url = new URL(req.url);
+
+      if (url.pathname === "/raw") {
+        return new NativeResponse().text("Hello World");
+      }
+
+      if (url.pathname === "/native") {
+        return new NativeResponse().text("Hello World");
+      }
 
       if (url.pathname === "/json") {
         return Response.json({ message: "hello", timestamp: Date.now() });
@@ -132,12 +171,20 @@ async function main(): Promise<void> {
 
   const base = `http://127.0.0.1:${server.port}`;
   console.log(`\nnapi-router listening on ${base}`);
-  console.log(`  ${connections} concurrent connections  \u2022  ${duration}s per endpoint\n`);
+  console.log(
+    `  ${connections} concurrent connections  \u2022  ${duration}s per endpoint\n`,
+  );
 
   const endpoints: { name: string; fn: () => Promise<Response> }[] = [
-    { name: "GET  /",      fn: () => fetch(`${base}/`) },
-    { name: "POST /echo",  fn: () => fetch(`${base}/echo`, { method: "POST", body: "benchmark-payload" }) },
-    { name: "GET  /json",  fn: () => fetch(`${base}/json`) },
+    { name: "GET  /", fn: () => fetch(`${base}/`) },
+    { name: "GET  /raw", fn: () => fetch(`${base}/raw`) },
+    { name: "GET  /native", fn: () => fetch(`${base}/native`) },
+    {
+      name: "POST /echo",
+      fn: () =>
+        fetch(`${base}/echo`, { method: "POST", body: "benchmark-payload" }),
+    },
+    { name: "GET  /json", fn: () => fetch(`${base}/json`) },
   ];
 
   console.log("\u2550".repeat(55));
