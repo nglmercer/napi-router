@@ -68,10 +68,11 @@ import {
   getFormFields,
 } from "./router/fileUpload";
 import {
-  validate as registerValidate,
+  validate as createValidateMiddleware,
+  schemaDefToJson,
   type RouteSchemaDefinition,
 } from "./router/validator";
-import type { Validator } from "../../index.js";
+import type { Validator } from "../index.js";
 export type ErrorHandler = (err: Error, ctx: Context) => Awaitable<void>;
 
 /**
@@ -606,14 +607,11 @@ export class Router {
   }
 
   /**
-   * Register a validation schema for a route and return a validation middleware.
-   * Validates body, query params, and path params before the handler runs.
-   * Returns 400 with structured errors if validation fails.
+   * Create a validation middleware for the given schema.
+   * The method and path are auto-detected from the request at runtime.
    *
    * Requires a Validator to be set via `router.setValidator()` first.
    *
-   * @param method The HTTP method(s) to validate on
-   * @param path The route path
    * @param schema The schema definition for body/query/params
    * @returns A RequestMiddleware that validates the request
    *
@@ -626,35 +624,29 @@ export class Router {
    * router.setValidator(validator)
    *
    * router.post("/users",
-   *   router.validate("POST", "/users", {
+   *   router.validate({
    *     body: {
    *       name: s.string({ required: true, min: 2, max: 100 }),
    *       email: s.string({ required: true, pattern: "email" }),
-   *       age: s.integer({ min: 0, max: 200 }),
    *     },
    *     query: {
    *       format: s.string({ enum: ["short", "full"] }),
    *     },
    *   }),
    *   async (ctx) => {
-   *     // ctx.req.parsedBody is validated and typed
-   *     const user = ctx.req.parsedBody as { name: string; email: string; age?: number }
+   *     const user = ctx.req.parsedBody
    *     return ctx.json({ created: true, user })
    *   }
    * )
    * ```
    */
-  validate(
-    method: "*" | HttpMethodString,
-    path: string,
-    schema: RouteSchemaDefinition,
-  ): RequestMiddleware {
+  validate(schema: RouteSchemaDefinition): RequestMiddleware {
     if (!this._validator) {
       throw new Error(
         "Router.validate() requires a Validator. Call router.setValidator(validator) first.",
       );
     }
-    return registerValidate(this.routes, this.routeMeta, method, path, schema, this._validator);
+    return createValidateMiddleware(schema, this._validator);
   }
 
   /**
@@ -663,6 +655,41 @@ export class Router {
    */
   getValidator(): Validator | undefined {
     return this._validator;
+  }
+
+  /**
+   * Register all validation schemas with the server for auto-validate mode.
+   * When auto-validate is enabled, the server validates requests in Rust
+   * before calling JS — zero NAPI overhead.
+   *
+   * Call this after all routes are registered.
+   *
+   * @param server The server instance
+   *
+   * @example
+   * ```ts
+   * const validator = new Validator()
+   * const router = new Router()
+   * router.setValidator(validator)
+   *
+   * router.post("/users",
+   *   router.validate({ body: { name: s.string({ required: true }) } }),
+   *   handler
+   * )
+   *
+   * const server = await serve({ port: 3000, fetch: router.handle })
+   * router.enableAutoValidate(server)  // Register schemas + enable auto-validate
+   * ```
+   */
+  enableAutoValidate(server: import("../serve").Server): Router {
+    if (!this._validator) {
+      throw new Error(
+        "Router.enableAutoValidate() requires a Validator. Call router.setValidator(validator) first.",
+      );
+    }
+    server.setValidator(this._validator);
+    server.setAutoValidate(true);
+    return this;
   }
 
   /**

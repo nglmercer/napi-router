@@ -3,10 +3,9 @@
  *
  * Tests for Rust-side validation:
  *   - Validator class (addSchema, validateBody, validateQuery, validateParams)
- *   - Schema builder (s.string, s.number, s.integer, s.boolean, s.object, s.array)
- *   - Auto-validate mode in server
+ *   - Schema builder (s.string, s.object, etc)
+ *   - Router.validate() middleware (auto-detect method/path)
  *   - Zero-duplicate parsing (bodyParser reuses Rust data)
- *   - Router.validate() middleware integration
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
@@ -17,8 +16,6 @@ import {
   withServer,
   get,
   post,
-  request,
-  sleep,
   type Server,
 } from "./setup.js";
 import { Router } from "../adapter/router/router.js";
@@ -466,7 +463,7 @@ describe("Schema builder s.*", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Router.validate() middleware integration
+// Router.validate() middleware — simplified API (no method/path needed)
 // ---------------------------------------------------------------------------
 
 describe("Router.validate() middleware", () => {
@@ -479,7 +476,7 @@ describe("Router.validate() middleware", () => {
 
     router.post(
       "/api/users",
-      router.validate("POST", "/api/users", {
+      router.validate({
         body: {
           name: s.string({ required: true, min: 2 }),
           email: s.string({ required: true, pattern: "email" }),
@@ -532,7 +529,7 @@ describe("Router.validate() middleware", () => {
 
     router.get(
       "/api/search",
-      router.validate("GET", "/api/search", {
+      router.validate({
         query: {
           q: s.string({ required: true, min: 1 }),
           page: s.integer({ min: 1 }),
@@ -566,7 +563,7 @@ describe("Router.validate() middleware", () => {
 
     router.get(
       "/api/users/:id",
-      router.validate("GET", "/api/users/:id", {
+      router.validate({
         params: {
           id: s.integer({ required: true, min: 1 }),
         },
@@ -590,77 +587,63 @@ describe("Router.validate() middleware", () => {
   it("throws if setValidator() was not called", () => {
     const router = new Router();
     expect(() => {
-      router.validate("GET", "/test", {
+      router.validate({
         query: { q: s.string({ required: true }) },
       });
     }).toThrow("Router.validate() requires a Validator");
   });
-});
 
-// ---------------------------------------------------------------------------
-// Auto-validate mode (server-level)
-// ---------------------------------------------------------------------------
-
-describe("Server auto-validate mode", () => {
-  it("returns 400 automatically when auto-validate is enabled", async () => {
+  it("works with multiple routes using different schemas", async () => {
     const port = nextPort("HTTP");
     const validator = new Validator();
-    validator.addSchema(
-      "POST:/api/items",
-      JSON.stringify({
-        body: {
-          title: { type: "string", required: true, min: 3 },
-        },
+    const router = new Router();
+    router.setValidator(validator);
+    router.body("*", "/api/*");
+
+    router.post(
+      "/api/users",
+      router.validate({
+        body: { name: s.string({ required: true }) },
       }),
+      (ctx) => ctx.json({ type: "user" }),
     );
 
-    await withServer(
-      port,
-      {
-        fetch: async (req) => {
-          const url = new URL(req.url);
-          if (url.pathname === "/api/items" && req.method === "POST") {
-            const body = await req.json();
-            return Response.json({ received: body });
-          }
-          return new Response("Not Found", { status: 404 });
-        },
-      },
-      async (server) => {
-        // Set validator and enable auto-validate on the raw HttpServer
-        (server as any).setValidator(validator);
-        (server as any).setAutoValidate(true);
-
-        // Valid body → 200
-        const res1 = await post(
-          server,
-          "/api/items",
-          JSON.stringify({ title: "Hello" }),
-          { headers: { "content-type": "application/json" } },
-        );
-        expect(res1.status).toBe(200);
-
-        // Invalid body (too short) → 400 from Rust, no JS handler called
-        const res2 = await post(
-          server,
-          "/api/items",
-          JSON.stringify({ title: "Hi" }),
-          { headers: { "content-type": "application/json" } },
-        );
-        expect(res2.status).toBe(400);
-        const body2 = await res2.json();
-        expect(body2.errors).toBeDefined();
-
-        // Missing required field → 400
-        const res3 = await post(
-          server,
-          "/api/items",
-          JSON.stringify({}),
-          { headers: { "content-type": "application/json" } },
-        );
-        expect(res3.status).toBe(400);
-      },
+    router.post(
+      "/api/posts",
+      router.validate({
+        body: { title: s.string({ required: true, min: 5 }) },
+      }),
+      (ctx) => ctx.json({ type: "post" }),
     );
+
+    await withServer(port, { fetch: router.handle }, async (server) => {
+      // User route — valid
+      const res1 = await post(
+        server,
+        "/api/users",
+        JSON.stringify({ name: "John" }),
+        { headers: { "content-type": "application/json" } },
+      );
+      expect(res1.status).toBe(200);
+
+      // Post route — title too short
+      const res2 = await post(
+        server,
+        "/api/posts",
+        JSON.stringify({ title: "Hi" }),
+        { headers: { "content-type": "application/json" } },
+      );
+      expect(res2.status).toBe(400);
+
+      // Post route — valid
+      const res3 = await post(
+        server,
+        "/api/posts",
+        JSON.stringify({ title: "Hello World" }),
+        { headers: { "content-type": "application/json" } },
+      );
+      expect(res3.status).toBe(200);
+    });
   });
 });
 

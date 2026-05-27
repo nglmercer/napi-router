@@ -1,9 +1,9 @@
-import { HttpServer, NativeResponse, RequestData } from "../index.js";
+import { HttpServer, NativeResponse, RequestData, Validator } from "../index.js";
 import { RawResponse } from "./router/rawResponse.js";
 
 export interface ServerWebSocket {
   readonly id: string;
-  readonly data: any;
+  readonly data: WebSocketConnectionData;
   send(message: string): number;
   send(data: Uint8Array | ArrayBuffer): number;
   close(code?: number, reason?: string): void;
@@ -14,6 +14,8 @@ export interface ServerWebSocket {
   publish(topic: string, message: string | Uint8Array | ArrayBuffer): void;
   isSubscribed(topic: string): boolean;
 }
+
+export type WebSocketConnectionData = Record<string, unknown> | null;
 
 export interface WebSocketHandlers {
   open?(ws: ServerWebSocket): void | Promise<void>;
@@ -56,7 +58,7 @@ const requestContexts = new WeakMap<
 
 const connectionMetas = new Map<
   string,
-  { data: unknown; remoteAddress: string | null }
+  { data: WebSocketConnectionData; remoteAddress: string | null }
 >();
 
 /// Stores Rust-parsed body/query per request (keyed by Request object).
@@ -165,8 +167,8 @@ export class Server {
    * Set a Validator instance for automatic request validation.
    * When set, the server will validate body/query/params before calling JS.
    */
-  setValidator(validator: import("../index.js").Validator): void {
-    (this.#raw as any).setValidator(validator);
+  setValidator(validator: Validator): void {
+    this.#raw.setValidator(validator);
   }
 
   /**
@@ -174,7 +176,7 @@ export class Server {
    * Requires a Validator to be set via setValidator() first.
    */
   setAutoValidate(enabled: boolean): void {
-    (this.#raw as any).setAutoValidate(enabled);
+    this.#raw.setAutoValidate(enabled);
   }
 }
 
@@ -207,8 +209,8 @@ function toWebRequest(data: RequestData, baseUrl: string): Request {
   return new Request(url, init);
 }
 
-function makeWsProxy(connectionId: string, raw: any): ServerWebSocket {
-  const getMeta = () =>
+function makeWsProxy(connectionId: string, raw: HttpServer): ServerWebSocket {
+  const getMeta = (): { data: WebSocketConnectionData; remoteAddress: string | null } =>
     connectionMetas.get(connectionId) ?? { data: null, remoteAddress: null };
 
   return {

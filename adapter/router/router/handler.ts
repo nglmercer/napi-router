@@ -52,13 +52,7 @@ export function innerHandle(
 
   // Store Rust-parsed body string for validator (avoids re-serialization)
   if (rustData?.parsedBody !== undefined) {
-    (req as any)._rustParsedBody = rustData.parsedBody;
-  }
-
-  // Store raw body bytes for validator's fast path (validateBodyBytes)
-  if (req.body !== null && req.body !== undefined) {
-    // Body is a ReadableStream; we can't easily get bytes without consuming it.
-    // The validator middleware will use _rustParsedBody instead.
+    req._rustParsedBody = rustData.parsedBody;
   }
 
   req.queryParams = queryParams;

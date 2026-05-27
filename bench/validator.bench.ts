@@ -278,7 +278,7 @@ async function benchHttpFlow() {
   routerRustMiddleware.body("*", "/api/*");
   routerRustMiddleware.post(
     "/api/users",
-    routerRustMiddleware.validate("POST", "/api/users", {
+    routerRustMiddleware.validate({
       body: {
         name: s.string({ required: true, min: 2 }),
         email: s.string({ required: true, pattern: "email" }),

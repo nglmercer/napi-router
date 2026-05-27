@@ -1,6 +1,5 @@
-import { splitRoutePath } from "../path"
-import { parseHttpMethods, HttpMethodString } from "../method"
-import type { EndpointRoute, RequestMiddleware, Context } from "../types"
+import type { RequestMiddleware, Context, NRequest } from "../types"
+import type { Validator as ValidatorType } from "../../../index.js"
 
 export interface FieldSchema {
     type: "string" | "number" | "integer" | "boolean" | "object" | "array"
@@ -55,7 +54,8 @@ export const s = {
     },
 }
 
-function fieldSchemaToRustJson(schema: FieldSchema): Record<string, unknown> {
+/** @internal */
+export function fieldSchemaToRustJson(schema: FieldSchema): Record<string, unknown> {
     const result: Record<string, unknown> = {
         type: schema.type,
         required: schema.required ?? false,
@@ -77,7 +77,8 @@ function fieldSchemaToRustJson(schema: FieldSchema): Record<string, unknown> {
     return result
 }
 
-function schemaDefToJson(def: RouteSchemaDefinition): string {
+/** @internal */
+export function schemaDefToJson(def: RouteSchemaDefinition): string {
     const result: Record<string, unknown> = {}
     if (def.body) {
         const body: Record<string, unknown> = {}
@@ -103,32 +104,73 @@ function schemaDefToJson(def: RouteSchemaDefinition): string {
     return JSON.stringify(result)
 }
 
-/// Creates a validation middleware that validates request data using Rust-side validation.
-/// Returns 400 with structured errors if validation fails.
-export function validate(
-    routes: EndpointRoute[],
-    _routeMeta: Map<string, { queryParams?: unknown[] }>,
-    method: "*" | HttpMethodString,
-    path: string,
-    schema: RouteSchemaDefinition,
-    validator: import("../../../index.js").Validator,
-): RequestMiddleware {
-    const routeKey = `${method === "*" ? "ALL" : method}:${path}`
+/**
+ * Build a route key from the request's method and path.
+ * Used for validator schema lookup.
+ * @internal
+ */
+function buildRouteKey(method: string, path: string): string {
+    return `${method}:${path}`
+}
 
-    // Register schema with Rust validator
-    validator.addSchema(routeKey, schemaDefToJson(schema))
+/**
+ * Create a validation middleware that validates request data using Rust-side validation.
+ * Returns 400 with structured errors if validation fails.
+ *
+ * The method and path are auto-detected from the request context at runtime.
+ *
+ * @param schema The schema definition for body/query/params
+ * @param validator The Rust Validator instance
+ * @returns A RequestMiddleware that validates the request
+ *
+ * @example
+ * ```ts
+ * import { Validator } from "napi-router"
+ * import { validate, s } from "napi-router/adapter/router/router/validator"
+ *
+ * const validator = new Validator()
+ * router.setValidator(validator)
+ *
+ * router.post("/users",
+ *   validate({
+ *     body: {
+ *       name: s.string({ required: true, min: 2, max: 100 }),
+ *       email: s.string({ required: true, pattern: "email" }),
+ *     },
+ *     query: {
+ *       format: s.string({ enum: ["short", "full"] }),
+ *     },
+ *   }, validator),
+ *   handler
+ * )
+ * ```
+ */
+export function validate(
+    schema: RouteSchemaDefinition,
+    validator: ValidatorType,
+): RequestMiddleware {
+    // Pre-register schema for auto-validate mode (uses placeholder key)
+    // The actual validation in middleware uses the runtime route key
+    const schemaJson = schemaDefToJson(schema)
 
     const validationMiddleware: RequestMiddleware = (ctx: Context) => {
-        const req = ctx.req
+        const req: NRequest = ctx.req
+        const url = new URL(req.url)
+        const routeKey = buildRouteKey(req.method, url.pathname)
 
-        // Validate body — use raw bytes path when available (fastest)
+        // Auto-register schema if not yet registered for this route
+        if (!validator.hasSchema(routeKey)) {
+            validator.addSchema(routeKey, schemaJson)
+        }
+
+        // Validate body — use Rust-parsed body string when available
         if (schema.body) {
             let validated = false
 
-            // Fastest path: Rust already has the body bytes, validate directly
-            const rustBody = (req as any)._rustBodyBytes
-            if (rustBody instanceof Uint8Array && rustBody.length > 0) {
-                const result = validator.validateBodyBytes(routeKey, Buffer.from(rustBody))
+            // Use Rust-parsed body string (set by handler.ts)
+            const rustBody = req._rustParsedBody
+            if (typeof rustBody === "string") {
+                const result = validator.validateBodyValue(routeKey, rustBody)
                 if (!result.success) {
                     ctx.status(400).json({
                         error: "Validation failed",
@@ -137,22 +179,6 @@ export function validate(
                     return
                 }
                 validated = true
-            }
-
-            if (!validated) {
-                // Fallback: use Rust-parsed body string
-                const rustData = (req as any)._rustParsedBody
-                if (typeof rustData === "string") {
-                    const result = validator.validateBodyValue(routeKey, rustData)
-                    if (!result.success) {
-                        ctx.status(400).json({
-                            error: "Validation failed",
-                            errors: result.errors,
-                        })
-                        return
-                    }
-                    validated = true
-                }
             }
 
             if (!validated) {

@@ -38,6 +38,10 @@ export interface NRequest extends Request {
   queries(key: string): string[];
   ip: string;
   ips: string[];
+  /** Rust-parsed JSON body string (set by handler for validator reuse). */
+  _rustParsedBody?: string;
+  /** Rust-parsed query params (set by serve.ts from RequestData). */
+  _rustQueryParams?: Record<string, string>;
 }
 
 export type RequestHandler = (
