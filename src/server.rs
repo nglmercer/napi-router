@@ -19,7 +19,7 @@ use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::native_response::NativeResponse;
 use crate::types::*;
-use crate::validator::ValidatorSchemas;
+use crate::validator::SchemaStore;
 use crate::websocket;
 
 type RequestTsfn =
@@ -41,7 +41,7 @@ struct ServerInner {
     conn_abort_handles: DashMap<u64, AbortHandle>,
     listen_port: AtomicU16,
     listen_addr: RwLock<Option<String>>,
-    validator_schemas: RwLock<Option<ValidatorSchemas>>,
+    validator_schemas: RwLock<Option<SchemaStore>>,
     auto_validate: std::sync::atomic::AtomicBool,
 }
 
@@ -704,10 +704,10 @@ async fn handle_request(
         if let Some(ref schemas) = *schemas_guard {
             let route_key = format!("{}:{}", method, path);
             if let Some(schema) = schemas.get(&route_key) {
-                // Validate body
+                // Validate body using compiled schema (fast path)
                 if let (Some(ref body_schema), Some(ref parsed)) = (&schema.body, &parsed_body_value) {
                     let errors =
-                        crate::schema::validate_json_value(parsed, body_schema, "body");
+                        crate::schema::validate_json_compiled(parsed, body_schema, "body");
                     if !errors.is_empty() {
                         let error_json = serde_json::json!({
                             "errors": errors.iter().map(|e| {
@@ -727,10 +727,10 @@ async fn handle_request(
                     }
                 }
 
-                // Validate query params
+                // Validate query params using compiled schema (fast path)
                 if let Some(ref query_schema) = schema.query {
                     if let Some(ref params) = query_params {
-                        let errors = crate::schema::validate_query_string(params, query_schema);
+                        let errors = crate::schema::validate_query_compiled(params, query_schema);
                         if !errors.is_empty() {
                             let error_json = serde_json::json!({
                                 "errors": errors.iter().map(|e| {
@@ -749,15 +749,6 @@ async fn handle_request(
                                 .unwrap());
                         }
                     }
-                }
-
-                // Validate path params
-                if let Some(ref params_schema) = schema.params {
-                    // Path params are extracted in JS after route matching,
-                    // so we can only validate if they're in the URL path segments.
-                    // For now, skip path param validation in auto mode.
-                    // Users can validate path params in JS using validator.validateParams()
-                    let _ = params_schema;
                 }
             }
         }

@@ -160,6 +160,22 @@ export class Server {
   get [Symbol.toStringTag](): string {
     return "Server";
   }
+
+  /**
+   * Set a Validator instance for automatic request validation.
+   * When set, the server will validate body/query/params before calling JS.
+   */
+  setValidator(validator: import("../index.js").Validator): void {
+    (this.#raw as any).setValidator(validator);
+  }
+
+  /**
+   * Enable/disable automatic validation before JS callback.
+   * Requires a Validator to be set via setValidator() first.
+   */
+  setAutoValidate(enabled: boolean): void {
+    (this.#raw as any).setAutoValidate(enabled);
+  }
 }
 
 function toWebRequest(data: RequestData, baseUrl: string): Request {

@@ -1,10 +1,14 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use dashmap::DashMap;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::schema::{validate_json_value, validate_query_string, RouteSchema, ValidationError};
+use crate::schema::{
+    validate_json_compiled, validate_query_compiled, CompiledRouteSchema, RouteSchema,
+    ValidationError,
+};
 
 #[napi(object)]
 #[derive(Clone, Debug)]
@@ -24,16 +28,17 @@ pub struct ValidationResult {
 }
 
 impl ValidationResult {
-    pub fn ok(data: Option<serde_json::Value>) -> Self {
-        let data_str = data.and_then(|v| serde_json::to_string(&v).ok());
+    #[inline]
+    fn ok(data: Option<String>) -> Self {
         ValidationResult {
             success: true,
             errors: None,
-            data: data_str,
+            data,
         }
     }
 
-    pub fn fail(errors: Vec<ValidationError>) -> Self {
+    #[inline]
+    fn fail(errors: Vec<ValidationError>) -> Self {
         ValidationResult {
             success: false,
             errors: Some(
@@ -51,11 +56,13 @@ impl ValidationResult {
     }
 }
 
-pub type ValidatorSchemas = std::sync::Arc<DashMap<String, RouteSchema>>;
+/// Schema store using DashMap for concurrent access.
+/// Schemas are registered once at startup and read many times.
+pub type SchemaStore = Arc<DashMap<String, CompiledRouteSchema>>;
 
 #[napi]
 pub struct Validator {
-    schemas: ValidatorSchemas,
+    schemas: SchemaStore,
 }
 
 #[napi]
@@ -63,7 +70,7 @@ impl Validator {
     #[napi(constructor)]
     pub fn new() -> Self {
         Validator {
-            schemas: std::sync::Arc::new(DashMap::new()),
+            schemas: Arc::new(DashMap::new()),
         }
     }
 
@@ -72,14 +79,15 @@ impl Validator {
     /// schema_json: JSON string with { body?, query?, params? } definitions
     #[napi]
     pub fn add_schema(&self, route_key: String, schema_json: String) -> Result<()> {
-        let schema: RouteSchema = serde_json::from_str(&schema_json)
+        let raw: RouteSchema = serde_json::from_str(&schema_json)
             .map_err(|e| Error::from_reason(format!("Invalid schema JSON: {}", e)))?;
-        self.schemas.insert(route_key, schema);
+        let compiled = CompiledRouteSchema::compile(&raw);
+        self.schemas.insert(route_key, compiled);
         Ok(())
     }
 
     /// Validate a JSON body string against the registered schema.
-    /// Returns validated data as JSON string on success.
+    /// Parses JSON in Rust (from string) and validates against compiled schema.
     #[napi]
     pub fn validate_body(&self, route_key: String, body_json: String) -> ValidationResult {
         let schema_ref = self.schemas.get(&route_key);
@@ -103,16 +111,51 @@ impl Validator {
             }
         };
 
-        let errors = validate_json_value(&body_value, body_schema, "body");
+        let errors = validate_json_compiled(&body_value, body_schema, "body");
         if errors.is_empty() {
-            ValidationResult::ok(Some(body_value))
+            ValidationResult::ok(Some(body_json))
         } else {
             ValidationResult::fail(errors)
         }
     }
 
-    /// Validate a pre-serialized JSON body value (from Rust body parsing).
-    /// body_json: the body as a JSON string (already parsed by Rust)
+    /// Validate a JSON body from raw bytes (zero-copy). Avoids string conversion.
+    /// This is the fastest path — parses directly from Uint8Array/Buffer.
+    #[napi]
+    pub fn validate_body_bytes(&self, route_key: String, body: Buffer) -> ValidationResult {
+        let schema_ref = self.schemas.get(&route_key);
+        let schema = match schema_ref {
+            Some(s) => s,
+            None => return ValidationResult::ok(None),
+        };
+        let body_schema = match &schema.body {
+            Some(s) => s,
+            None => return ValidationResult::ok(None),
+        };
+
+        let body_value: serde_json::Value = match serde_json::from_slice(body.as_ref()) {
+            Ok(v) => v,
+            Err(e) => {
+                return ValidationResult::fail(vec![ValidationError {
+                    field: "body".to_string(),
+                    message: format!("Invalid JSON: {}", e),
+                    code: "invalid_json".to_string(),
+                }]);
+            }
+        };
+
+        let errors = validate_json_compiled(&body_value, body_schema, "body");
+        if errors.is_empty() {
+            // Return the original JSON string for downstream use
+            let data = unsafe { String::from_utf8_unchecked(body.to_vec()) };
+            ValidationResult::ok(Some(data))
+        } else {
+            ValidationResult::fail(errors)
+        }
+    }
+
+    /// Validate a pre-serialized JSON body value (string).
+    /// Alias for validate_body — accepts the body as a JSON string.
     #[napi]
     pub fn validate_body_value(&self, route_key: String, body_json: String) -> ValidationResult {
         self.validate_body(route_key, body_json)
@@ -135,7 +178,7 @@ impl Validator {
             None => return ValidationResult::ok(None),
         };
 
-        let errors = validate_query_string(&query, query_schema);
+        let errors = validate_query_compiled(&query, query_schema);
         if errors.is_empty() {
             ValidationResult::ok(None)
         } else {
@@ -160,7 +203,7 @@ impl Validator {
             None => return ValidationResult::ok(None),
         };
 
-        let errors = validate_query_string(&params, params_schema);
+        let errors = validate_query_compiled(&params, params_schema);
         if errors.is_empty() {
             ValidationResult::ok(None)
         } else {
@@ -193,7 +236,7 @@ impl Validator {
     }
 
     /// Get the internal schemas reference for use by HttpServer.
-    pub fn get_schemas(&self) -> ValidatorSchemas {
+    pub fn get_schemas(&self) -> SchemaStore {
         self.schemas.clone()
     }
 }

@@ -606,7 +606,7 @@ export class Router {
   }
 
   /**
-   * Register a validation schema for a route.
+   * Register a validation schema for a route and return a validation middleware.
    * Validates body, query params, and path params before the handler runs.
    * Returns 400 with structured errors if validation fails.
    *
@@ -615,7 +615,7 @@ export class Router {
    * @param method The HTTP method(s) to validate on
    * @param path The route path
    * @param schema The schema definition for body/query/params
-   * @returns The router, for chaining
+   * @returns A RequestMiddleware that validates the request
    *
    * @example
    * ```ts
@@ -648,14 +648,13 @@ export class Router {
     method: "*" | HttpMethodString,
     path: string,
     schema: RouteSchemaDefinition,
-  ): Router {
+  ): RequestMiddleware {
     if (!this._validator) {
       throw new Error(
         "Router.validate() requires a Validator. Call router.setValidator(validator) first.",
       );
     }
-    registerValidate(this.routes, this.routeMeta, method, path, schema, this._validator);
-    return this;
+    return registerValidate(this.routes, this.routeMeta, method, path, schema, this._validator);
   }
 
   /**

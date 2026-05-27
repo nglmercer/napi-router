@@ -112,7 +112,7 @@ export function validate(
     path: string,
     schema: RouteSchemaDefinition,
     validator: import("../../../index.js").Validator,
-): EndpointRoute[] {
+): RequestMiddleware {
     const routeKey = `${method === "*" ? "ALL" : method}:${path}`
 
     // Register schema with Rust validator
@@ -121,21 +121,14 @@ export function validate(
     const validationMiddleware: RequestMiddleware = (ctx: Context) => {
         const req = ctx.req
 
-        // Validate body — use Rust-parsed body string if available, otherwise from parsedBody
+        // Validate body — use raw bytes path when available (fastest)
         if (schema.body) {
-            let bodyJson: string | undefined
+            let validated = false
 
-            // Check if Rust already provided the parsed body as string
-            const rustData = (req as any)._rustParsedBody
-            if (typeof rustData === "string") {
-                bodyJson = rustData
-            } else if (req.parsedBody !== undefined) {
-                // Body was parsed by bodyParser (or Rust), serialize for validation
-                bodyJson = JSON.stringify(req.parsedBody)
-            }
-
-            if (bodyJson) {
-                const result = validator.validateBodyValue(routeKey, bodyJson)
+            // Fastest path: Rust already has the body bytes, validate directly
+            const rustBody = (req as any)._rustBodyBytes
+            if (rustBody instanceof Uint8Array && rustBody.length > 0) {
+                const result = validator.validateBodyBytes(routeKey, Buffer.from(rustBody))
                 if (!result.success) {
                     ctx.status(400).json({
                         error: "Validation failed",
@@ -143,15 +136,46 @@ export function validate(
                     })
                     return
                 }
-            } else if (schema.body) {
-                // Check if any body field is required
-                const hasRequired = Object.values(schema.body).some(f => f.required)
-                if (hasRequired) {
-                    ctx.status(400).json({
-                        error: "Validation failed",
-                        errors: [{ field: "body", message: "Request body is required", code: "required" }],
-                    })
-                    return
+                validated = true
+            }
+
+            if (!validated) {
+                // Fallback: use Rust-parsed body string
+                const rustData = (req as any)._rustParsedBody
+                if (typeof rustData === "string") {
+                    const result = validator.validateBodyValue(routeKey, rustData)
+                    if (!result.success) {
+                        ctx.status(400).json({
+                            error: "Validation failed",
+                            errors: result.errors,
+                        })
+                        return
+                    }
+                    validated = true
+                }
+            }
+
+            if (!validated) {
+                // Fallback: use parsedBody from bodyParser
+                if (req.parsedBody !== undefined) {
+                    const result = validator.validateBodyValue(routeKey, JSON.stringify(req.parsedBody))
+                    if (!result.success) {
+                        ctx.status(400).json({
+                            error: "Validation failed",
+                            errors: result.errors,
+                        })
+                        return
+                    }
+                } else {
+                    // Check if any body field is required
+                    const hasRequired = Object.values(schema.body).some(f => f.required)
+                    if (hasRequired) {
+                        ctx.status(400).json({
+                            error: "Validation failed",
+                            errors: [{ field: "body", message: "Request body is required", code: "required" }],
+                        })
+                        return
+                    }
                 }
             }
         }
@@ -195,12 +219,5 @@ export function validate(
         }
     }
 
-    routes.push({
-        splitPath: splitRoutePath(path),
-        method: parseHttpMethods(method),
-        handler: validationMiddleware,
-        middlewareName: "validator",
-    })
-
-    return routes
+    return validationMiddleware
 }

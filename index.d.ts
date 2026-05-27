@@ -70,12 +70,17 @@ export declare class Validator {
   addSchema(routeKey: string, schemaJson: string): void
   /**
    * Validate a JSON body string against the registered schema.
-   * Returns validated data as JSON string on success.
+   * Parses JSON in Rust (from string) and validates against compiled schema.
    */
   validateBody(routeKey: string, bodyJson: string): ValidationResult
   /**
-   * Validate a pre-serialized JSON body value (from Rust body parsing).
-   * body_json: the body as a JSON string (already parsed by Rust)
+   * Validate a JSON body from raw bytes (zero-copy). Avoids string conversion.
+   * This is the fastest path — parses directly from Uint8Array/Buffer.
+   */
+  validateBodyBytes(routeKey: string, body: Buffer): ValidationResult
+  /**
+   * Validate a pre-serialized JSON body value (string).
+   * Alias for validate_body — accepts the body as a JSON string.
    */
   validateBodyValue(routeKey: string, bodyJson: string): ValidationResult
   /** Validate query parameters against the registered schema. */
