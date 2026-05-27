@@ -1,5 +1,8 @@
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::sync::Arc;
+
+use dashmap::DashMap;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -93,14 +96,37 @@ pub enum CompiledPattern {
     Alpha,
     Alphanumeric,
     Numeric,
+    Custom(String), // Reference to a custom pattern in the registry
+}
+
+/// Registry for custom validation patterns (regex-based).
+pub type PatternRegistry = Arc<DashMap<String, regex::Regex>>;
+
+/// Create a new empty pattern registry.
+pub fn create_pattern_registry() -> PatternRegistry {
+    Arc::new(DashMap::new())
+}
+
+/// Register a custom pattern in the registry.
+pub fn register_pattern(
+    registry: &PatternRegistry,
+    name: &str,
+    regex_pattern: &str,
+) -> Result<(), String> {
+    let re = regex::Regex::new(regex_pattern)
+        .map_err(|e| format!("Invalid regex '{}': {}", regex_pattern, e))?;
+    registry.insert(name.to_string(), re);
+    Ok(())
 }
 
 impl CompiledPattern {
     #[inline]
-    fn matches(&self, value: &str) -> bool {
+    fn matches(&self, value: &str, registry: Option<&PatternRegistry>) -> bool {
         match self {
             CompiledPattern::Email => {
-                value.len() >= 5 && value.as_bytes().iter().any(|&b| b == b'@') && value.as_bytes().iter().any(|&b| b == b'.')
+                value.len() >= 5
+                    && value.as_bytes().iter().any(|&b| b == b'@')
+                    && value.as_bytes().iter().any(|&b| b == b'.')
             }
             CompiledPattern::Url => value.starts_with("http://") || value.starts_with("https://"),
             CompiledPattern::Uuid => {
@@ -115,11 +141,19 @@ impl CompiledPattern {
             CompiledPattern::Alpha => value.bytes().all(|b| b.is_ascii_alphabetic()),
             CompiledPattern::Alphanumeric => value.bytes().all(|b| b.is_ascii_alphanumeric()),
             CompiledPattern::Numeric => value.bytes().all(|b| b.is_ascii_digit()),
+            CompiledPattern::Custom(name) => {
+                if let Some(reg) = registry {
+                    if let Some(re) = reg.get(name.as_str()) {
+                        return re.is_match(value);
+                    }
+                }
+                false
+            }
         }
     }
 }
 
-fn compile_pattern(s: &str) -> Option<CompiledPattern> {
+fn compile_pattern(s: &str, registry: Option<&PatternRegistry>) -> Option<CompiledPattern> {
     match s {
         "email" => Some(CompiledPattern::Email),
         "url" => Some(CompiledPattern::Url),
@@ -127,11 +161,19 @@ fn compile_pattern(s: &str) -> Option<CompiledPattern> {
         "alpha" => Some(CompiledPattern::Alpha),
         "alphanumeric" => Some(CompiledPattern::Alphanumeric),
         "numeric" => Some(CompiledPattern::Numeric),
-        _ => None,
+        name => {
+            // Check if it's a custom pattern in the registry
+            if let Some(reg) = registry {
+                if reg.contains_key(name) {
+                    return Some(CompiledPattern::Custom(name.to_string()));
+                }
+            }
+            None
+        }
     }
 }
 
-fn compile_field(def: &FieldDef) -> CompiledField {
+fn compile_field(def: &FieldDef, registry: Option<&PatternRegistry>) -> CompiledField {
     match def {
         FieldDef::String {
             required,
@@ -144,8 +186,12 @@ fn compile_field(def: &FieldDef) -> CompiledField {
             required: *required,
             min: *min,
             max: *max,
-            pattern: pattern.as_deref().and_then(compile_pattern),
-            enum_values: enum_values.as_ref().map(|v| v.iter().map(|s| s.as_str().into()).collect()),
+            pattern: pattern
+                .as_deref()
+                .and_then(|p| compile_pattern(p, registry)),
+            enum_values: enum_values
+                .as_ref()
+                .map(|v| v.iter().map(|s| s.as_str().into()).collect()),
         },
         FieldDef::Number {
             required,
@@ -177,7 +223,7 @@ fn compile_field(def: &FieldDef) -> CompiledField {
             let props = properties.as_ref().map(|p| {
                 let mut v: Vec<(Box<str>, CompiledField)> = p
                     .iter()
-                    .map(|(k, v)| (k.as_str().into(), compile_field(v)))
+                    .map(|(k, v)| (k.as_str().into(), compile_field(v, registry)))
                     .collect();
                 v.sort_unstable_by(|a, b| a.0.cmp(&b.0));
                 v.into_boxed_slice()
@@ -195,7 +241,7 @@ fn compile_field(def: &FieldDef) -> CompiledField {
             ..
         } => CompiledField::Array {
             required: *required,
-            items: items.as_ref().map(|i| Box::new(compile_field(i))),
+            items: items.as_ref().map(|i| Box::new(compile_field(i, registry))),
             min: *min,
             max: *max,
         },
@@ -231,17 +277,18 @@ pub struct CompiledRouteSchema {
 }
 
 impl CompiledRouteSchema {
-    pub fn compile(schema: &RouteSchema) -> Self {
-        let compile_map = |map: &Option<HashMap<String, FieldDef>>| -> Option<Box<[(Box<str>, CompiledField)]>> {
-            map.as_ref().map(|m| {
-                let mut v: Vec<(Box<str>, CompiledField)> = m
-                    .iter()
-                    .map(|(k, v)| (k.as_str().into(), compile_field(v)))
-                    .collect();
-                v.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-                v.into_boxed_slice()
-            })
-        };
+    pub fn compile(schema: &RouteSchema, registry: Option<&PatternRegistry>) -> Self {
+        let compile_map =
+            |map: &Option<HashMap<String, FieldDef>>| -> Option<Box<[(Box<str>, CompiledField)]>> {
+                map.as_ref().map(|m| {
+                    let mut v: Vec<(Box<str>, CompiledField)> = m
+                        .iter()
+                        .map(|(k, v)| (k.as_str().into(), compile_field(v, registry)))
+                        .collect();
+                    v.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+                    v.into_boxed_slice()
+                })
+            };
 
         CompiledRouteSchema {
             body: compile_map(&schema.body),
@@ -302,6 +349,7 @@ fn validate_string_fast(
     enum_values: &Option<Vec<Box<str>>>,
     err: &mut ErrorBuffer,
     field_path: &str,
+    registry: Option<&PatternRegistry>,
 ) {
     let len = value.len() as f64;
 
@@ -326,10 +374,10 @@ fn validate_string_fast(
     if let Some(ref pat) = pattern {
         // SAFETY: we only check ASCII bytes for patterns
         let s = unsafe { std::str::from_utf8_unchecked(value) };
-        if !pat.matches(s) {
+        if !pat.matches(s, registry) {
             err.push(
                 field_path,
-                format!("Value does not match pattern"),
+                "Value does not match pattern".to_string(),
                 "pattern",
             );
         }
@@ -337,11 +385,7 @@ fn validate_string_fast(
     if let Some(ref allowed) = enum_values {
         let s = unsafe { std::str::from_utf8_unchecked(value) };
         if !allowed.iter().any(|a| a.as_ref() == s) {
-            err.push(
-                field_path,
-                format!("Value must be one of enum"),
-                "enum",
-            );
+            err.push(field_path, "Value must be one of enum".to_string(), "enum");
         }
     }
 }
@@ -364,20 +408,12 @@ fn validate_number_fast(
     }
     if let Some(min_val) = min {
         if value < *min_val {
-            err.push(
-                field_path,
-                format!("Value must be >= {}", min_val),
-                "min",
-            );
+            err.push(field_path, format!("Value must be >= {}", min_val), "min");
         }
     }
     if let Some(max_val) = max {
         if value > *max_val {
-            err.push(
-                field_path,
-                format!("Value must be <= {}", max_val),
-                "max",
-            );
+            err.push(field_path, format!("Value must be <= {}", max_val), "max");
         }
     }
 }
@@ -387,6 +423,7 @@ fn validate_compiled_field(
     field: &CompiledField,
     err: &mut ErrorBuffer,
     field_path: &str,
+    registry: Option<&PatternRegistry>,
 ) {
     match field {
         CompiledField::String {
@@ -397,14 +434,21 @@ fn validate_compiled_field(
             ..
         } => {
             if let Some(s) = value.as_str() {
-                validate_string_fast(s.as_bytes(), min, max, pattern, enum_values, err, field_path);
+                validate_string_fast(
+                    s.as_bytes(),
+                    min,
+                    max,
+                    pattern,
+                    enum_values,
+                    err,
+                    field_path,
+                    registry,
+                );
             } else {
                 err.push(field_path, "Expected string".into(), "type");
             }
         }
-        CompiledField::Number {
-            min, max, int, ..
-        } => {
+        CompiledField::Number { min, max, int, .. } => {
             if let Some(n) = value.as_f64() {
                 validate_number_fast(n, min, max, *int, err, field_path);
             } else {
@@ -439,7 +483,7 @@ fn validate_compiled_field(
                             }
                         }
                         Some(val) => {
-                            validate_compiled_field(val, field_def, err, &child_path);
+                            validate_compiled_field(val, field_def, err, &child_path, registry);
                         }
                     }
                 }
@@ -471,7 +515,7 @@ fn validate_compiled_field(
                 if let Some(item_schema) = items {
                     for (i, item) in arr.iter().enumerate() {
                         let item_path = format!("{}[{}]", field_path, i);
-                        validate_compiled_field(item, item_schema, err, &item_path);
+                        validate_compiled_field(item, item_schema, err, &item_path, registry);
                     }
                 }
             } else {
@@ -498,6 +542,7 @@ pub fn validate_json_compiled(
     value: &serde_json::Value,
     schema: &[(Box<str>, CompiledField)],
     prefix: &str,
+    registry: Option<&PatternRegistry>,
 ) -> Vec<ValidationError> {
     let mut err = ErrorBuffer::new();
 
@@ -510,7 +555,7 @@ pub fn validate_json_compiled(
                 }
             }
             Some(val) => {
-                validate_compiled_field(val, field_def, &mut err, &field_path);
+                validate_compiled_field(val, field_def, &mut err, &field_path, registry);
             }
         }
     }
@@ -518,23 +563,11 @@ pub fn validate_json_compiled(
     err.into_vec()
 }
 
-/// Validate a JSON value against a schema (legacy, uses non-compiled schema).
-pub fn validate_json_value(
-    value: &serde_json::Value,
-    schema: &HashMap<String, FieldDef>,
-    prefix: &str,
-) -> Vec<ValidationError> {
-    let compiled: Vec<(Box<str>, CompiledField)> = schema
-        .iter()
-        .map(|(k, v)| (k.as_str().into(), compile_field(v)))
-        .collect();
-    validate_json_compiled(value, &compiled, prefix)
-}
-
 /// Validate query string params against compiled schema.
 pub fn validate_query_compiled(
     params: &HashMap<String, String>,
     schema: &[(Box<str>, CompiledField)],
+    registry: Option<&PatternRegistry>,
 ) -> Vec<ValidationError> {
     let mut err = ErrorBuffer::new();
 
@@ -543,28 +576,20 @@ pub fn validate_query_compiled(
         match params.get(key.as_ref()) {
             None => {
                 if is_required(field_def) {
-                    err.push(&field_path, "Query parameter is required".into(), "required");
+                    err.push(
+                        &field_path,
+                        "Query parameter is required".into(),
+                        "required",
+                    );
                 }
             }
             Some(val) => {
-                validate_string_as_field_fast(val, field_def, &mut err, &field_path);
+                validate_string_as_field_fast(val, field_def, &mut err, &field_path, registry);
             }
         }
     }
 
     err.into_vec()
-}
-
-/// Validate query string params against schema (legacy).
-pub fn validate_query_string(
-    params: &HashMap<String, String>,
-    schema: &HashMap<String, FieldDef>,
-) -> Vec<ValidationError> {
-    let compiled: Vec<(Box<str>, CompiledField)> = schema
-        .iter()
-        .map(|(k, v)| (k.as_str().into(), compile_field(v)))
-        .collect();
-    validate_query_compiled(params, &compiled)
 }
 
 #[inline]
@@ -573,6 +598,7 @@ fn validate_string_as_field_fast(
     field: &CompiledField,
     err: &mut ErrorBuffer,
     field_path: &str,
+    registry: Option<&PatternRegistry>,
 ) {
     match field {
         CompiledField::String {
@@ -582,31 +608,54 @@ fn validate_string_as_field_fast(
             enum_values,
             ..
         } => {
-            validate_string_fast(value.as_bytes(), min, max, pattern, enum_values, err, field_path);
+            validate_string_fast(
+                value.as_bytes(),
+                min,
+                max,
+                pattern,
+                enum_values,
+                err,
+                field_path,
+                registry,
+            );
         }
-        CompiledField::Number {
-            min, max, int, ..
-        } => {
+        CompiledField::Number { min, max, int, .. } => {
             if let Ok(n) = fast_float_parse(value) {
                 validate_number_fast(n, min, max, *int, err, field_path);
             } else {
-                err.push(field_path, format!("Expected number, got '{}'", value), "type");
+                err.push(
+                    field_path,
+                    format!("Expected number, got '{}'", value),
+                    "type",
+                );
             }
         }
         CompiledField::Integer { min, max, .. } => {
             if let Ok(n) = fast_float_parse(value) {
                 validate_number_fast(n, min, max, true, err, field_path);
             } else {
-                err.push(field_path, format!("Expected integer, got '{}'", value), "type");
+                err.push(
+                    field_path,
+                    format!("Expected integer, got '{}'", value),
+                    "type",
+                );
             }
         }
         CompiledField::Boolean { .. } => {
             if !matches_boolean(value) {
-                err.push(field_path, format!("Expected boolean, got '{}'", value), "type");
+                err.push(
+                    field_path,
+                    format!("Expected boolean, got '{}'", value),
+                    "type",
+                );
             }
         }
         CompiledField::Object { .. } => {
-            err.push(field_path, "Cannot validate object from query string".into(), "type");
+            err.push(
+                field_path,
+                "Cannot validate object from query string".into(),
+                "type",
+            );
         }
         CompiledField::Array {
             items, min, max, ..
@@ -615,18 +664,32 @@ fn validate_string_as_field_fast(
             let count = value.bytes().filter(|&b| b == b',').count() as f64 + 1.0;
             if let Some(min_len) = min {
                 if count < *min_len {
-                    err.push(field_path, format!("Array length must be >= {}", min_len), "min_items");
+                    err.push(
+                        field_path,
+                        format!("Array length must be >= {}", min_len),
+                        "min_items",
+                    );
                 }
             }
             if let Some(max_len) = max {
                 if count > *max_len {
-                    err.push(field_path, format!("Array length must be <= {}", max_len), "max_items");
+                    err.push(
+                        field_path,
+                        format!("Array length must be <= {}", max_len),
+                        "max_items",
+                    );
                 }
             }
             if let Some(item_schema) = items {
                 for (i, part) in value.split(',').enumerate() {
                     let item_path = format!("{}[{}]", field_path, i);
-                    validate_string_as_field_fast(part.trim(), item_schema, err, &item_path);
+                    validate_string_as_field_fast(
+                        part.trim(),
+                        item_schema,
+                        err,
+                        &item_path,
+                        registry,
+                    );
                 }
             }
         }
@@ -636,7 +699,6 @@ fn validate_string_as_field_fast(
 /// Fast float parser that avoids full `str::parse` overhead.
 #[inline]
 fn fast_float_parse(s: &str) -> Result<f64, ()> {
-    // Fast path for integers (most common case)
     let bytes = s.as_bytes();
     if bytes.is_empty() {
         return Err(());
@@ -684,7 +746,6 @@ fn fast_float_parse(s: &str) -> Result<f64, ()> {
     }
 
     if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
-        // Fall back to standard parser for exponents
         return s.parse::<f64>().map_err(|_| ());
     }
 

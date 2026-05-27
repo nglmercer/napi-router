@@ -289,10 +289,49 @@ s.array(
 | `"alphanumeric"` | ASCII letters and digits |
 | `"numeric"` | ASCII digits only |
 
+### Custom Patterns
+
+Register custom regex patterns on the validator:
+
+```ts
+const validator = new Validator();
+
+// Register custom patterns
+validator.addPattern("phone", "^\\+?[1-9]\\d{1,14}$");
+validator.addPattern("slug", "^[a-z0-9]+(?:-[a-z0-9]+)*$");
+validator.addPattern("hex_color", "^#[0-9a-fA-F]{6}$");
+validator.addPattern("credit_card", "^\\d{4}-?\\d{4}-?\\d{4}-?\\d{4}$");
+
+// Use in schemas
+router.post("/contact",
+  router.validate({
+    body: {
+      phone: s.string().required().pattern("phone"),
+      slug: s.string().required().pattern("slug"),
+      color: s.string().pattern("hex_color"),
+    },
+  }),
+  handler
+);
+```
+
+Pattern management:
+
+```ts
+validator.addPattern(name, regex);     // Register a pattern
+validator.hasPattern(name);            // Check if pattern exists
+validator.removePattern(name);         // Remove a pattern
+```
+
 ### Validator API
 
 ```ts
 const validator = new Validator();
+
+// Register custom pattern (regex)
+validator.addPattern("phone", "^\\+?[1-9]\\d{1,14}$");
+validator.hasPattern("phone");        // boolean
+validator.removePattern("phone");     // boolean
 
 // Register schema (JSON string)
 validator.addSchema("POST:/users", JSON.stringify({ body: { ... } }));

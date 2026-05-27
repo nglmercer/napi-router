@@ -6,8 +6,8 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use crate::schema::{
-    validate_json_compiled, validate_query_compiled, CompiledRouteSchema, RouteSchema,
-    ValidationError,
+    create_pattern_registry, register_pattern, validate_json_compiled, validate_query_compiled,
+    CompiledRouteSchema, PatternRegistry, RouteSchema, ValidationError,
 };
 
 #[napi(object)]
@@ -57,12 +57,12 @@ impl ValidationResult {
 }
 
 /// Schema store using DashMap for concurrent access.
-/// Schemas are registered once at startup and read many times.
 pub type SchemaStore = Arc<DashMap<String, CompiledRouteSchema>>;
 
 #[napi]
 pub struct Validator {
     schemas: SchemaStore,
+    patterns: PatternRegistry,
 }
 
 #[napi]
@@ -71,7 +71,30 @@ impl Validator {
     pub fn new() -> Self {
         Validator {
             schemas: Arc::new(DashMap::new()),
+            patterns: create_pattern_registry(),
         }
+    }
+
+    /// Register a custom validation pattern (regex).
+    /// The pattern can then be used in schema definitions by name.
+    ///
+    /// @param name Pattern name (e.g. "phone", "slug", "hex_color")
+    /// @param regex Regular expression pattern string
+    ///
+    /// @example
+    /// ```ts
+    /// const validator = new Validator()
+    /// validator.addPattern("phone", "^\\+?[1-9]\\d{1,14}$")
+    /// validator.addPattern("slug", "^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    /// validator.addPattern("hex_color", "^#[0-9a-fA-F]{6}$")
+    ///
+    /// // Then use in schemas:
+    /// s.string().required().pattern("phone")
+    /// s.string().required().pattern("slug")
+    /// ```
+    #[napi]
+    pub fn add_pattern(&self, name: String, regex: String) -> Result<()> {
+        register_pattern(&self.patterns, &name, &regex).map_err(|e| Error::from_reason(e))
     }
 
     /// Register a validation schema for a route.
@@ -81,13 +104,24 @@ impl Validator {
     pub fn add_schema(&self, route_key: String, schema_json: String) -> Result<()> {
         let raw: RouteSchema = serde_json::from_str(&schema_json)
             .map_err(|e| Error::from_reason(format!("Invalid schema JSON: {}", e)))?;
-        let compiled = CompiledRouteSchema::compile(&raw);
+        let compiled = CompiledRouteSchema::compile(&raw, Some(&self.patterns));
         self.schemas.insert(route_key, compiled);
         Ok(())
     }
 
+    /// Check if a custom pattern is registered.
+    #[napi]
+    pub fn has_pattern(&self, name: String) -> bool {
+        self.patterns.contains_key(&name)
+    }
+
+    /// Remove a custom pattern.
+    #[napi]
+    pub fn remove_pattern(&self, name: String) -> bool {
+        self.patterns.remove(&name).is_some()
+    }
+
     /// Validate a JSON body string against the registered schema.
-    /// Parses JSON in Rust (from string) and validates against compiled schema.
     #[napi]
     pub fn validate_body(&self, route_key: String, body_json: String) -> ValidationResult {
         let schema_ref = self.schemas.get(&route_key);
@@ -111,7 +145,7 @@ impl Validator {
             }
         };
 
-        let errors = validate_json_compiled(&body_value, body_schema, "body");
+        let errors = validate_json_compiled(&body_value, body_schema, "body", Some(&self.patterns));
         if errors.is_empty() {
             ValidationResult::ok(Some(body_json))
         } else {
@@ -119,8 +153,7 @@ impl Validator {
         }
     }
 
-    /// Validate a JSON body from raw bytes (zero-copy). Avoids string conversion.
-    /// This is the fastest path — parses directly from Uint8Array/Buffer.
+    /// Validate a JSON body from raw bytes (zero-copy).
     #[napi]
     pub fn validate_body_bytes(&self, route_key: String, body: Buffer) -> ValidationResult {
         let schema_ref = self.schemas.get(&route_key);
@@ -144,9 +177,8 @@ impl Validator {
             }
         };
 
-        let errors = validate_json_compiled(&body_value, body_schema, "body");
+        let errors = validate_json_compiled(&body_value, body_schema, "body", Some(&self.patterns));
         if errors.is_empty() {
-            // Return the original JSON string for downstream use
             let data = unsafe { String::from_utf8_unchecked(body.to_vec()) };
             ValidationResult::ok(Some(data))
         } else {
@@ -155,7 +187,6 @@ impl Validator {
     }
 
     /// Validate a pre-serialized JSON body value (string).
-    /// Alias for validate_body — accepts the body as a JSON string.
     #[napi]
     pub fn validate_body_value(&self, route_key: String, body_json: String) -> ValidationResult {
         self.validate_body(route_key, body_json)
@@ -178,7 +209,7 @@ impl Validator {
             None => return ValidationResult::ok(None),
         };
 
-        let errors = validate_query_compiled(&query, query_schema);
+        let errors = validate_query_compiled(&query, query_schema, Some(&self.patterns));
         if errors.is_empty() {
             ValidationResult::ok(None)
         } else {
@@ -203,7 +234,7 @@ impl Validator {
             None => return ValidationResult::ok(None),
         };
 
-        let errors = validate_query_compiled(&params, params_schema);
+        let errors = validate_query_compiled(&params, params_schema, Some(&self.patterns));
         if errors.is_empty() {
             ValidationResult::ok(None)
         } else {
@@ -238,5 +269,10 @@ impl Validator {
     /// Get the internal schemas reference for use by HttpServer.
     pub fn get_schemas(&self) -> SchemaStore {
         self.schemas.clone()
+    }
+
+    /// Get the pattern registry for use by HttpServer.
+    pub fn get_patterns(&self) -> PatternRegistry {
+        self.patterns.clone()
     }
 }

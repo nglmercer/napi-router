@@ -42,6 +42,7 @@ struct ServerInner {
     listen_port: AtomicU16,
     listen_addr: RwLock<Option<String>>,
     validator_schemas: RwLock<Option<SchemaStore>>,
+    validator_patterns: RwLock<Option<crate::schema::PatternRegistry>>,
     auto_validate: std::sync::atomic::AtomicBool,
 }
 
@@ -83,16 +84,17 @@ impl HttpServer {
                 listen_port: AtomicU16::new(0),
                 listen_addr: RwLock::new(None),
                 validator_schemas: RwLock::new(None),
+                validator_patterns: RwLock::new(None),
                 auto_validate: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
 
     /// Set a Validator instance for automatic request validation.
-    /// When set, the server will validate body/query/params before calling JS.
     #[napi]
     pub fn set_validator(&self, validator: &crate::validator::Validator) {
         *self.inner.validator_schemas.write() = Some(validator.get_schemas());
+        *self.inner.validator_patterns.write() = Some(validator.get_patterns());
     }
 
     /// Enable/disable automatic validation before JS callback.
@@ -506,7 +508,15 @@ impl HttpServer {
 
     fn next_id(prefix: &str) -> String {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
-        format!("{}_{}_{}", prefix, COUNTER.fetch_add(1, Ordering::Relaxed), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis())
+        format!(
+            "{}_{}_{}",
+            prefix,
+            COUNTER.fetch_add(1, Ordering::Relaxed),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        )
     }
 
     #[napi(getter)]
@@ -516,7 +526,11 @@ impl HttpServer {
 
     #[napi(getter)]
     pub fn hostname(&self) -> String {
-        self.inner.listen_addr.read().clone().unwrap_or_else(|| "0.0.0.0".to_string())
+        self.inner
+            .listen_addr
+            .read()
+            .clone()
+            .unwrap_or_else(|| "0.0.0.0".to_string())
     }
 
     #[napi(getter)]
@@ -535,8 +549,15 @@ impl HttpServer {
             return None;
         }
         let connection_id = Self::next_id("ws");
-        let remote_addr = self.inner.request_addrs.get(&request_id).map(|r| r.value().clone()).unwrap_or_default();
-        self.inner.upgraded_requests.insert(request_id, (connection_id.clone(), remote_addr));
+        let remote_addr = self
+            .inner
+            .request_addrs
+            .get(&request_id)
+            .map(|r| r.value().clone())
+            .unwrap_or_default();
+        self.inner
+            .upgraded_requests
+            .insert(request_id, (connection_id.clone(), remote_addr));
         Some(connection_id)
     }
 
@@ -699,15 +720,26 @@ async fn handle_request(
     let query_params = parse_query_from_url(&url);
 
     // Auto-validate against registered schemas before calling JS
-    if state.auto_validate.load(std::sync::atomic::Ordering::Relaxed) {
+    if state
+        .auto_validate
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
         let schemas_guard = state.validator_schemas.read();
+        let patterns_guard = state.validator_patterns.read();
+        let patterns_ref = patterns_guard.as_ref();
         if let Some(ref schemas) = *schemas_guard {
             let route_key = format!("{}:{}", method, path);
             if let Some(schema) = schemas.get(&route_key) {
                 // Validate body using compiled schema (fast path)
-                if let (Some(ref body_schema), Some(ref parsed)) = (&schema.body, &parsed_body_value) {
-                    let errors =
-                        crate::schema::validate_json_compiled(parsed, body_schema, "body");
+                if let (Some(ref body_schema), Some(ref parsed)) =
+                    (&schema.body, &parsed_body_value)
+                {
+                    let errors = crate::schema::validate_json_compiled(
+                        parsed,
+                        body_schema,
+                        "body",
+                        patterns_ref,
+                    );
                     if !errors.is_empty() {
                         let error_json = serde_json::json!({
                             "errors": errors.iter().map(|e| {
@@ -730,7 +762,11 @@ async fn handle_request(
                 // Validate query params using compiled schema (fast path)
                 if let Some(ref query_schema) = schema.query {
                     if let Some(ref params) = query_params {
-                        let errors = crate::schema::validate_query_compiled(params, query_schema);
+                        let errors = crate::schema::validate_query_compiled(
+                            params,
+                            query_schema,
+                            patterns_ref,
+                        );
                         if !errors.is_empty() {
                             let error_json = serde_json::json!({
                                 "errors": errors.iter().map(|e| {
@@ -802,12 +838,22 @@ async fn handle_request(
     if is_upgrade {
         if let Some((_, (connection_id, addr))) = state.upgraded_requests.remove(&request_id) {
             if let Some(req) = req_opt.take() {
-                return handle_ws_upgrade(req, state, addr, connection_id, response_data.headers).await;
+                return handle_ws_upgrade(req, state, addr, connection_id, response_data.headers)
+                    .await;
             }
         }
         if response_data.upgrade.unwrap_or(false) {
-            if let (Some(req), Some(connection_id)) = (req_opt.take(), response_data.connection_id.clone()) {
-                return handle_ws_upgrade(req, state, remote_addr.clone(), connection_id, response_data.headers).await;
+            if let (Some(req), Some(connection_id)) =
+                (req_opt.take(), response_data.connection_id.clone())
+            {
+                return handle_ws_upgrade(
+                    req,
+                    state,
+                    remote_addr.clone(),
+                    connection_id,
+                    response_data.headers,
+                )
+                .await;
             }
         }
     }
@@ -962,10 +1008,7 @@ fn parse_query_from_url(url: &str) -> Option<HashMap<String, String>> {
         if let Some(eq_pos) = pair.find('=') {
             let key = &pair[..eq_pos];
             let value = &pair[eq_pos + 1..];
-            params.insert(
-                urldecode(key),
-                urldecode(value),
-            );
+            params.insert(urldecode(key), urldecode(value));
         } else if !pair.is_empty() {
             params.insert(urldecode(pair), String::new());
         }
@@ -983,10 +1026,9 @@ fn urldecode(input: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(
-                std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""),
-                16,
-            ) {
+            if let Ok(byte) =
+                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
+            {
                 result.push(byte as char);
                 i += 3;
                 continue;

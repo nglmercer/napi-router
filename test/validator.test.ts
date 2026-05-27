@@ -412,6 +412,139 @@ describe("Validator — nested objects", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Custom patterns (regex-based)
+// ---------------------------------------------------------------------------
+
+describe("Custom patterns", () => {
+  it("validates custom pattern (phone)", () => {
+    const validator = new Validator();
+    validator.addPattern("phone", "^\\+?[1-9]\\d{1,14}$");
+    validator.addSchema(
+      "POST:/contact",
+      JSON.stringify({
+        body: {
+          phone: { type: "string", required: true, pattern: "phone" },
+        },
+      }),
+    );
+
+    // Valid phone
+    const result1 = validator.validateBody(
+      "POST:/contact",
+      JSON.stringify({ phone: "+1234567890" }),
+    );
+    expect(result1.success).toBe(true);
+
+    // Invalid phone
+    const result2 = validator.validateBody(
+      "POST:/contact",
+      JSON.stringify({ phone: "not-a-phone" }),
+    );
+    expect(result2.success).toBe(false);
+    expect(result2.errors![0].code).toBe("pattern");
+  });
+
+  it("validates custom pattern (slug)", () => {
+    const validator = new Validator();
+    validator.addPattern("slug", "^[a-z0-9]+(?:-[a-z0-9]+)*$");
+    validator.addSchema(
+      "POST:/posts",
+      JSON.stringify({
+        body: {
+          slug: { type: "string", required: true, pattern: "slug" },
+        },
+      }),
+    );
+
+    // Valid slug
+    const result1 = validator.validateBody(
+      "POST:/posts",
+      JSON.stringify({ slug: "my-blog-post" }),
+    );
+    expect(result1.success).toBe(true);
+
+    // Invalid slug (uppercase)
+    const result2 = validator.validateBody(
+      "POST:/posts",
+      JSON.stringify({ slug: "My-Blog-Post" }),
+    );
+    expect(result2.success).toBe(false);
+  });
+
+  it("validates custom pattern (hex_color)", () => {
+    const validator = new Validator();
+    validator.addPattern("hex_color", "^#[0-9a-fA-F]{6}$");
+    validator.addSchema(
+      "POST:/theme",
+      JSON.stringify({
+        body: {
+          color: { type: "string", required: true, pattern: "hex_color" },
+        },
+      }),
+    );
+
+    // Valid hex color
+    const result1 = validator.validateBody(
+      "POST:/theme",
+      JSON.stringify({ color: "#ff0000" }),
+    );
+    expect(result1.success).toBe(true);
+
+    // Invalid hex color
+    const result2 = validator.validateBody(
+      "POST:/theme",
+      JSON.stringify({ color: "red" }),
+    );
+    expect(result2.success).toBe(false);
+  });
+
+  it("checks if pattern exists", () => {
+    const validator = new Validator();
+    validator.addPattern("custom", "^test$");
+    expect(validator.hasPattern("custom")).toBe(true);
+    expect(validator.hasPattern("nonexistent")).toBe(false);
+  });
+
+  it("removes a pattern", () => {
+    const validator = new Validator();
+    validator.addPattern("temp", "^test$");
+    expect(validator.hasPattern("temp")).toBe(true);
+    validator.removePattern("temp");
+    expect(validator.hasPattern("temp")).toBe(false);
+  });
+
+  it("fails on invalid regex", () => {
+    const validator = new Validator();
+    expect(() => {
+      validator.addPattern("bad", "[invalid");
+    }).toThrow();
+  });
+
+  it("works with fluent API and custom patterns", () => {
+    const validator = new Validator();
+    validator.addPattern("phone", "^\\+?[1-9]\\d{1,14}$");
+
+    const schema = {
+      body: {
+        phone: s.string().required().pattern("phone"),
+      },
+    };
+
+    validator.addSchema("POST:/api", JSON.stringify({
+      body: {
+        phone: { type: "string", required: true, pattern: "phone" },
+      },
+    }));
+
+    const result = validator.validateBody(
+      "POST:/api",
+      JSON.stringify({ phone: "+1234567890" }),
+    );
+    expect(result.success).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Schema builder — fluent API (s.string().min().max(), etc.)
 // ---------------------------------------------------------------------------
 

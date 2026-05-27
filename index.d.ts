@@ -2,10 +2,7 @@
 /* eslint-disable */
 export declare class HttpServer {
   constructor()
-  /**
-   * Set a Validator instance for automatic request validation.
-   * When set, the server will validate body/query/params before calling JS.
-   */
+  /** Set a Validator instance for automatic request validation. */
   setValidator(validator: Validator): void
   /** Enable/disable automatic validation before JS callback. */
   setAutoValidate(enabled: boolean): void
@@ -63,25 +60,40 @@ export declare class NativeResponse {
 export declare class Validator {
   constructor()
   /**
+   * Register a custom validation pattern (regex).
+   * The pattern can then be used in schema definitions by name.
+   *
+   * @param name Pattern name (e.g. "phone", "slug", "hex_color")
+   * @param regex Regular expression pattern string
+   *
+   * @example
+   * ```ts
+   * const validator = new Validator()
+   * validator.addPattern("phone", "^\\+?[1-9]\\d{1,14}$")
+   * validator.addPattern("slug", "^[a-z0-9]+(?:-[a-z0-9]+)*$")
+   * validator.addPattern("hex_color", "^#[0-9a-fA-F]{6}$")
+   *
+   * // Then use in schemas:
+   * s.string().required().pattern("phone")
+   * s.string().required().pattern("slug")
+   * ```
+   */
+  addPattern(name: string, regex: string): void
+  /**
    * Register a validation schema for a route.
    * route_key format: "METHOD:/path" (e.g. "POST:/users")
    * schema_json: JSON string with { body?, query?, params? } definitions
    */
   addSchema(routeKey: string, schemaJson: string): void
-  /**
-   * Validate a JSON body string against the registered schema.
-   * Parses JSON in Rust (from string) and validates against compiled schema.
-   */
+  /** Check if a custom pattern is registered. */
+  hasPattern(name: string): boolean
+  /** Remove a custom pattern. */
+  removePattern(name: string): boolean
+  /** Validate a JSON body string against the registered schema. */
   validateBody(routeKey: string, bodyJson: string): ValidationResult
-  /**
-   * Validate a JSON body from raw bytes (zero-copy). Avoids string conversion.
-   * This is the fastest path — parses directly from Uint8Array/Buffer.
-   */
+  /** Validate a JSON body from raw bytes (zero-copy). */
   validateBodyBytes(routeKey: string, body: Buffer): ValidationResult
-  /**
-   * Validate a pre-serialized JSON body value (string).
-   * Alias for validate_body — accepts the body as a JSON string.
-   */
+  /** Validate a pre-serialized JSON body value (string). */
   validateBodyValue(routeKey: string, bodyJson: string): ValidationResult
   /** Validate query parameters against the registered schema. */
   validateQuery(routeKey: string, query: Record<string, string>): ValidationResult
