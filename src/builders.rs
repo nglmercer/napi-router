@@ -17,6 +17,12 @@ pub struct StringField {
     pub(crate) default: Option<String>,
 }
 
+impl Default for StringField {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl StringField {
     #[napi(constructor)]
@@ -90,6 +96,12 @@ pub struct NumberField {
     pub(crate) default: Option<f64>,
 }
 
+impl Default for NumberField {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl NumberField {
     #[napi(constructor)]
@@ -161,6 +173,12 @@ pub struct BooleanField {
     pub(crate) default: Option<bool>,
 }
 
+impl Default for BooleanField {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl BooleanField {
     #[napi(constructor)]
@@ -197,6 +215,12 @@ impl BooleanField {
 pub struct ObjectField {
     pub(crate) required: bool,
     pub(crate) properties: HashMap<String, FieldDef>,
+}
+
+impl Default for ObjectField {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[napi]
@@ -261,6 +285,12 @@ pub struct ArrayField {
     pub(crate) items: Option<Box<FieldDef>>,
     pub(crate) min: Option<f64>,
     pub(crate) max: Option<f64>,
+}
+
+impl Default for ArrayField {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[napi]
@@ -362,6 +392,12 @@ pub struct SchemaBuilder {
     body: HashMap<String, FieldDef>,
     query: HashMap<String, FieldDef>,
     params: HashMap<String, FieldDef>,
+}
+
+impl Default for SchemaBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[napi]

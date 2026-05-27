@@ -8,10 +8,7 @@ import type {
   MergedRequestMiddleware,
   Context,
 } from "./types";
-import {
-  type Server,
-  type WebSocketHandlers,
-} from "../serve";
+import { type Server, type WebSocketHandlers } from "../serve";
 import { isMergedRequestMiddleware } from "./middleware";
 import { HttpMethodString, stringifyHttpMethods } from "./method";
 import { ResponseBuilder, HTTP_STATUS } from "./responseBuilder";
@@ -72,7 +69,7 @@ import {
   schemaDefToJson,
   type RouteSchemaDefinition,
 } from "./router/validator";
-import type { Validator } from "../index.js";
+import type { Validator } from "../../index.js";
 export type ErrorHandler = (err: Error, ctx: Context) => Awaitable<void>;
 
 /**
@@ -232,7 +229,11 @@ export class Router {
    */
   handle: RequestHandler = (request, server) => {
     try {
-      const result = innerHandle(this.routes, request as unknown as NRequest, server);
+      const result = innerHandle(
+        this.routes,
+        request as unknown as NRequest,
+        server,
+      );
       if (result && result instanceof Promise) {
         return (result as Promise<Response>).catch((err: Error) => {
           if (this.errorHandler) {

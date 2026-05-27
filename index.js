@@ -576,6 +576,12 @@ if (!nativeBinding) {
 }
 
 module.exports = nativeBinding
+module.exports.ArrayField = nativeBinding.ArrayField
+module.exports.BooleanField = nativeBinding.BooleanField
 module.exports.HttpServer = nativeBinding.HttpServer
 module.exports.NativeResponse = nativeBinding.NativeResponse
+module.exports.NumberField = nativeBinding.NumberField
+module.exports.ObjectField = nativeBinding.ObjectField
+module.exports.SchemaBuilder = nativeBinding.SchemaBuilder
+module.exports.StringField = nativeBinding.StringField
 module.exports.Validator = nativeBinding.Validator

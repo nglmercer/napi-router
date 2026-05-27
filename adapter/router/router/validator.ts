@@ -1,5 +1,23 @@
 import type { RequestMiddleware, Context, NRequest } from "../types"
 import type { Validator as ValidatorType } from "../../../index.js"
+import {
+    SchemaBuilder as RustSchemaBuilder,
+    StringField as RustStringField,
+    NumberField as RustNumberField,
+    BooleanField as RustBooleanField,
+    ObjectField as RustObjectField,
+    ArrayField as RustArrayField,
+} from "../../../index.js"
+
+// Re-export Rust builders for direct use
+export {
+    RustSchemaBuilder as SchemaBuilder,
+    RustStringField as StringField,
+    RustNumberField as NumberField,
+    RustBooleanField as BooleanField,
+    RustObjectField as ObjectField,
+    RustArrayField as ArrayField,
+}
 
 // ─── Field Schema (internal representation) ──────────────────────────
 

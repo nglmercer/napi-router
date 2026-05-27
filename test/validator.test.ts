@@ -19,7 +19,15 @@ import {
   type Server,
 } from "./setup.js";
 import { Router } from "../adapter/router/router.js";
-import { s } from "../adapter/router/router/validator.js";
+import {
+  s,
+  SchemaBuilder,
+  StringField,
+  NumberField,
+  BooleanField,
+  ObjectField,
+  ArrayField,
+} from "../adapter/router/router/validator.js";
 
 // ---------------------------------------------------------------------------
 // Validator class — direct Rust API tests
