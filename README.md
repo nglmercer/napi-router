@@ -226,7 +226,7 @@ When validation fails, the server returns `400 Bad Request` with structured erro
 
 ### Schema Builder (`s.*`)
 
-Fluent API for defining field schemas with method chaining:
+Fluent TypeScript API for defining field schemas with method chaining:
 
 ```ts
 import { s } from "napi-router/adapter/router/router/validator";
@@ -266,6 +266,86 @@ s.array(
   })
 ).min(1)
 ```
+
+### Rust Builder API (Fastest)
+
+For maximum performance, use the Rust-native builders. No JSON serialization overhead — schemas are built directly in Rust memory:
+
+```ts
+import {
+  Validator,
+  SchemaBuilder,
+  StringField,
+  NumberField,
+  BooleanField,
+  ObjectField,
+  ArrayField,
+} from "napi-router";
+import { Router } from "napi-router/adapter/router";
+
+const validator = new Validator();
+const router = new Router();
+router.setValidator(validator);
+
+// Build schema in Rust
+const schema = new SchemaBuilder();
+
+const nameField = new StringField();
+nameField.required();
+nameField.setMin(2);
+nameField.setMax(100);
+schema.addBodyString("name", nameField);
+
+const emailField = new StringField();
+emailField.required();
+emailField.setPattern("email");
+schema.addBodyString("email", emailField);
+
+const ageField = new NumberField();
+ageField.integer();
+ageField.setMin(0);
+ageField.setMax(200);
+schema.addBodyNumber("age", ageField);
+
+// Nested objects
+const addressField = new ObjectField();
+addressField.required();
+const streetField = new StringField();
+streetField.required();
+addressField.addString("street", streetField);
+const cityField = new StringField();
+cityField.required();
+addressField.addString("city", cityField);
+schema.addBodyObject("address", addressField);
+
+// Arrays
+const tagsField = new ArrayField();
+tagsField.setMin(1);
+tagsField.setMax(10);
+const tagItem = new StringField();
+tagsField.ofString(tagItem);
+schema.addBodyArray("tags", tagsField);
+
+// Query params
+const pageField = new NumberField();
+pageField.integer();
+pageField.setMin(1);
+schema.addQueryNumber("page", pageField);
+
+// Register schema
+validator.addSchemaFromBuilder("POST:/users", schema);
+```
+
+#### Rust Builder Classes
+
+| Class | Methods | Description |
+|-------|---------|-------------|
+| `StringField` | `.required()`, `.setMin(n)`, `.setMax(n)`, `.setPattern(name)`, `.setEnum([...])`, `.setDefault(v)` | String field |
+| `NumberField` | `.required()`, `.setMin(n)`, `.setMax(n)`, `.integer()`, `.setDefault(v)` | Number field |
+| `BooleanField` | `.required()`, `.setDefault(v)` | Boolean field |
+| `ObjectField` | `.required()`, `.addString(k, f)`, `.addNumber(k, f)`, `.addBoolean(k, f)`, `.addObject(k, f)`, `.addArray(k, f)` | Object with nested fields |
+| `ArrayField` | `.required()`, `.setMin(n)`, `.setMax(n)`, `.ofString(f)`, `.ofNumber(f)`, `.ofObject(f)`, `.ofArray(f)` | Array with item type |
+| `SchemaBuilder` | `.addBodyString(k, f)`, `.addBodyNumber(k, f)`, `.addBodyBoolean(k, f)`, `.addBodyObject(k, f)`, `.addBodyArray(k, f)`, `.addQueryString(k, f)`, `.addQueryNumber(k, f)`, `.addParamString(k, f)`, `.addParamNumber(k, f)` | Route schema builder |
 
 ### Schema Types
 
@@ -335,6 +415,9 @@ validator.removePattern("phone");     // boolean
 
 // Register schema (JSON string)
 validator.addSchema("POST:/users", JSON.stringify({ body: { ... } }));
+
+// Register schema (Rust builder — faster, no JSON parsing)
+validator.addSchemaFromBuilder("POST:/users", schemaBuilder);
 
 // Validate body (from JSON string)
 const result = validator.validateBody("POST:/users", jsonString);
@@ -446,15 +529,28 @@ bun bench/validator.bench.ts
 Results (AMD Ryzen 7, Linux):
 
 ```
+SCHEMA REGISTRATION
+───────────────────────────────────────────────────────────
+JSON string: validator.addSchema()              71.16K ops/sec
+Rust Builder: validator.addSchemaFromBuilder()  29.99K ops/sec
+
+VALIDATION (valid body)
+───────────────────────────────────────────────────────────
+Rust validateBody(JSON schema)       261.87K ops/sec
+Rust validateBody(Builder schema)    269.45K ops/sec
+Rust validateBodyBytes               271.14K ops/sec
+Manual JS: JSON.parse + validate     831.34K ops/sec
+
 HTTP REQUEST FLOW (10,000 requests)
 ───────────────────────────────────────────────────────────
-No validation                                           2.64K req/sec
-Auto-validate (Rust internal)                           5.63K req/sec  ← 2.26x faster
-Rust Validator middleware (NAPI calls)                  2.51K req/sec
-Manual JS validation middleware                         2.49K req/sec
+No validation                                           1.90K req/sec
+Auto-validate (JSON schema)                             4.84K req/sec  ← 2.32x faster
+Auto-validate (Rust builder schema)                     4.94K req/sec  ← 2.37x faster (best)
+Rust Validator middleware (TS s.* builder)              2.05K req/sec
+Manual JS validation middleware                         2.08K req/sec
 ```
 
-**Auto-validate** is recommended for production workloads. The middleware path is for cases where you need custom JS logic after validation.
+**Auto-validate** is recommended for production workloads. The Rust builder schema is marginally faster than JSON schema for validation. The TS `s.*` builder and manual JS are equivalent in the middleware path (NAPI overhead dominates).
 
 ## Benchmarks
 
@@ -481,12 +577,13 @@ src/              Rust source (Hyper + Tokio HTTP server)
 ├── types.rs      N-API type definitions
 ├── schema.rs     Schema types, compiled patterns, validation logic
 ├── validator.rs  Validator class (N-API exported)
+├── builders.rs   Rust-native schema builders (SchemaBuilder, StringField, etc.)
 ├── lib.rs        Module entry point
 adapter/          TypeScript adapter (Bun-compatible serve() API)
 ├── serve.ts
 ├── router/       Express-like router
 │   ├── router.ts           Router class
-│   ├── router/validator.ts Validation middleware + schema builder (s.*)
+│   ├── router/validator.ts Validation middleware + TS schema builder (s.*)
 │   ├── router/handler.ts   Request routing engine
 │   ├── router/bodyParser.ts Body parsing (reuses Rust-parsed data)
 │   └── ...

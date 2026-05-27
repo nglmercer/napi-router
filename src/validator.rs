@@ -116,25 +116,14 @@ impl Validator {
         Ok(())
     }
 
-    /// Register a validation schema using a SchemaBuilder (faster, no JSON parsing).
-    /// This is the recommended way to register schemas for best performance.
+    /// Register a validation schema using a SchemaBuilder (zero-copy, no JSON).
+    /// This is the fastest way to register schemas.
     ///
     /// @param route_key Route key format: "METHOD:/path" (e.g. "POST:/users")
     /// @param builder The SchemaBuilder instance with the schema definition
-    ///
-    /// @example
-    /// ```ts
-    /// const schema = new SchemaBuilder()
-    ///   .bodyString("name", new StringField().required().min(2))
-    ///   .bodyString("email", new StringField().required().pattern("email"))
-    ///   .queryNumber("page", new NumberField().integer().min(1))
-    ///
-    /// validator.addSchemaFromBuilder("POST:/users", schema)
-    /// ```
     #[napi]
     pub fn add_schema_from_builder(&self, route_key: String, builder: &SchemaBuilder) {
-        let raw = builder.build();
-        let compiled = CompiledRouteSchema::compile(&raw, Some(&self.patterns));
+        let compiled = builder.compile();
         self.schemas.insert(route_key, compiled);
     }
 

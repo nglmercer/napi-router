@@ -6,11 +6,11 @@
  * Measures:
  *   1. Rust Validator.validateBody() — NAPI call overhead
  *   2. Manual JS validation — typical if/else checks
- *   3. Auto-validate mode — validation inside Rust (no JS roundtrip)
+ *   3. Rust Builder schema registration vs JSON schema registration
  *   4. Full request flow comparison
  */
 
-import { Validator } from "../index.js";
+import { Validator, SchemaBuilder, StringField, NumberField, BooleanField } from "../index.js";
 import { serve, type Server } from "../adapter/serve.js";
 import { Router } from "../adapter/router/router.js";
 import { s } from "../adapter/router/router/validator.js";
@@ -39,7 +39,7 @@ function bench(name: string, fn: () => void, iterations = 100_000): number {
 
   const opsPerSec = (iterations / elapsed) * 1000;
   console.log(
-    `  ${name.padEnd(50)} ${formatOps(opsPerSec).padStart(10)} ops/sec  (${elapsed.toFixed(2)}ms)`,
+    `  ${name.padEnd(55)} ${formatOps(opsPerSec).padStart(10)} ops/sec  (${elapsed.toFixed(2)}ms)`,
   );
   return opsPerSec;
 }
@@ -53,59 +53,29 @@ const validBody = JSON.stringify({
   email: "john@example.com",
   age: 30,
   role: "admin",
-  tags: ["developer", "rust"],
-  address: {
-    street: "123 Main St",
-    city: "Springfield",
-    zip: "12345",
-  },
 });
-
-const validBodyBytes = Buffer.from(validBody);
 
 const invalidBody = JSON.stringify({
   name: "J", // too short
   email: "notanemail",
   age: -1,
   role: "superadmin",
-  tags: [],
-  address: {
-    street: "",
-    city: "",
-    zip: "abc",
-  },
 });
 
+const validBodyBytes = Buffer.from(validBody);
+
 // ---------------------------------------------------------------------------
-// Rust Validator setup
+// Schema registration: JSON string approach
 // ---------------------------------------------------------------------------
 
-const rustValidator = new Validator();
-const schemaJson = JSON.stringify({
+const jsonSchemaString = JSON.stringify({
   body: {
     name: { type: "string", required: true, min: 2, max: 100 },
     email: { type: "string", required: true, pattern: "email" },
     age: { type: "integer", required: true, min: 0, max: 200 },
     role: { type: "string", required: true, enum: ["admin", "user", "guest"] },
-    tags: {
-      type: "array",
-      required: false,
-      min: 1,
-      max: 10,
-      items: { type: "string" },
-    },
-    address: {
-      type: "object",
-      required: false,
-      properties: {
-        street: { type: "string", required: true },
-        city: { type: "string", required: true },
-        zip: { type: "string", required: false, pattern: "numeric" },
-      },
-    },
   },
 });
-rustValidator.addSchema("POST:/api/users", schemaJson);
 
 // ---------------------------------------------------------------------------
 // Manual JS validation (typical approach)
@@ -156,89 +126,126 @@ function validateUserManual(body: unknown): { success: boolean; errors?: Validat
     }
   }
 
-  if (b.tags !== undefined) {
-    if (!Array.isArray(b.tags)) {
-      errors.push({ field: "body.tags", message: "Expected array", code: "type" });
-    } else {
-      if (b.tags.length < 1) errors.push({ field: "body.tags", message: "Too few items", code: "min_items" });
-      if (b.tags.length > 10) errors.push({ field: "body.tags", message: "Too many items", code: "max_items" });
-    }
-  }
-
-  if (b.address !== undefined) {
-    if (typeof b.address !== "object" || b.address === null) {
-      errors.push({ field: "body.address", message: "Expected object", code: "type" });
-    } else {
-      const addr = b.address as Record<string, unknown>;
-      if (typeof addr.street !== "string" || addr.street.length === 0) {
-        errors.push({ field: "body.address.street", message: "Required", code: "required" });
-      }
-      if (typeof addr.city !== "string" || addr.city.length === 0) {
-        errors.push({ field: "body.address.city", message: "Required", code: "required" });
-      }
-    }
-  }
-
   return errors.length > 0 ? { success: false, errors } : { success: true };
 }
+
+// ---------------------------------------------------------------------------
+// Benchmark: Schema Registration (JSON vs Rust Builder)
+// ---------------------------------------------------------------------------
+
+console.log("\n═══════════════════════════════════════════════════════════════════");
+console.log("  SCHEMA REGISTRATION BENCHMARK");
+console.log("═══════════════════════════════════════════════════════════════════\n");
+
+const REG_ITERATIONS = 10_000;
+
+bench(
+  "JSON string: validator.addSchema()",
+  () => {
+    const v = new Validator();
+    v.addSchema("POST:/users", jsonSchemaString);
+  },
+  REG_ITERATIONS,
+);
+
+bench(
+  "Rust Builder: validator.addSchemaFromBuilder()",
+  () => {
+    const v = new Validator();
+    const schema = new SchemaBuilder();
+    const nameField = new StringField();
+    nameField.required();
+    nameField.setMin(2);
+    nameField.setMax(100);
+    schema.addBodyString("name", nameField);
+    const emailField = new StringField();
+    emailField.required();
+    emailField.setPattern("email");
+    schema.addBodyString("email", emailField);
+    const ageField = new NumberField();
+    ageField.integer();
+    ageField.setMin(0);
+    ageField.setMax(200);
+    schema.addBodyNumber("age", ageField);
+    const roleField = new StringField();
+    roleField.required();
+    roleField.setEnum(["admin", "user", "guest"]);
+    schema.addBodyString("role", roleField);
+    v.addSchemaFromBuilder("POST:/users", schema);
+  },
+  REG_ITERATIONS,
+);
 
 // ---------------------------------------------------------------------------
 // Benchmark: Pure Validation (NAPI call overhead)
 // ---------------------------------------------------------------------------
 
 console.log("\n═══════════════════════════════════════════════════════════════════");
-console.log("  PURE VALIDATION BENCHMARK (NAPI call overhead)");
-console.log("═══════════════════════════════════════════════════════════════════");
-console.log("  Note: This measures the NAPI boundary crossing cost.");
-console.log("  In real usage, validation happens inside Rust (auto-validate)");
-console.log("  with zero NAPI overhead.\n");
+console.log("  VALIDATION BENCHMARK (valid body)");
+console.log("═══════════════════════════════════════════════════════════════════\n");
 
-const ITERATIONS = 100_000;
+const VAL_ITERATIONS = 100_000;
 
-console.log("--- Valid body ---\n");
+// Setup validators
+const jsonValidator = new Validator();
+jsonValidator.addSchema("POST:/users", jsonSchemaString);
+
+const builderValidator = new Validator();
+const bSchema = new SchemaBuilder();
+const bName = new StringField(); bName.required(); bName.setMin(2); bName.setMax(100);
+bSchema.addBodyString("name", bName);
+const bEmail = new StringField(); bEmail.required(); bEmail.setPattern("email");
+bSchema.addBodyString("email", bEmail);
+const bAge = new NumberField(); bAge.integer(); bAge.setMin(0); bAge.setMax(200);
+bSchema.addBodyNumber("age", bAge);
+const bRole = new StringField(); bRole.required(); bRole.setEnum(["admin", "user", "guest"]);
+bSchema.addBodyString("role", bRole);
+builderValidator.addSchemaFromBuilder("POST:/users", bSchema);
 
 bench(
-  "Rust validateBody(string)",
-  () => { rustValidator.validateBody("POST:/api/users", validBody); },
-  ITERATIONS,
+  "Rust validateBody(JSON schema, valid)",
+  () => { jsonValidator.validateBody("POST:/users", validBody); },
+  VAL_ITERATIONS,
 );
 
 bench(
-  "Rust validateBodyBytes(buffer)",
-  () => { rustValidator.validateBodyBytes("POST:/api/users", validBodyBytes); },
-  ITERATIONS,
+  "Rust validateBody(Rust builder schema, valid)",
+  () => { builderValidator.validateBody("POST:/users", validBody); },
+  VAL_ITERATIONS,
 );
 
 bench(
-  "Manual JS: JSON.parse + validate",
+  "Rust validateBodyBytes(valid)",
+  () => { jsonValidator.validateBodyBytes("POST:/users", validBodyBytes); },
+  VAL_ITERATIONS,
+);
+
+bench(
+  "Manual JS: JSON.parse + validate (valid)",
   () => { validateUserManual(JSON.parse(validBody)); },
-  ITERATIONS,
+  VAL_ITERATIONS,
+);
+
+console.log("\n═══════════════════════════════════════════════════════════════════");
+console.log("  VALIDATION BENCHMARK (invalid body)");
+console.log("═══════════════════════════════════════════════════════════════════\n");
+
+bench(
+  "Rust validateBody(JSON schema, invalid)",
+  () => { jsonValidator.validateBody("POST:/users", invalidBody); },
+  VAL_ITERATIONS,
 );
 
 bench(
-  "JSON.parse() baseline only",
-  () => { JSON.parse(validBody); },
-  ITERATIONS,
-);
-
-console.log("\n--- Invalid body ---\n");
-
-bench(
-  "Rust validateBody(string)",
-  () => { rustValidator.validateBody("POST:/api/users", invalidBody); },
-  ITERATIONS,
+  "Rust validateBody(Rust builder schema, invalid)",
+  () => { builderValidator.validateBody("POST:/users", invalidBody); },
+  VAL_ITERATIONS,
 );
 
 bench(
-  "Rust validateBodyBytes(buffer)",
-  () => { rustValidator.validateBodyBytes("POST:/api/users", Buffer.from(invalidBody)); },
-  ITERATIONS,
-);
-
-bench(
-  "Manual JS: JSON.parse + validate",
+  "Manual JS: JSON.parse + validate (invalid)",
   () => { validateUserManual(JSON.parse(invalidBody)); },
-  ITERATIONS,
+  VAL_ITERATIONS,
 );
 
 // ---------------------------------------------------------------------------
@@ -247,7 +254,7 @@ bench(
 
 async function benchHttpFlow() {
   console.log("\n═══════════════════════════════════════════════════════════════════");
-  console.log("  HTTP REQUEST FLOW BENCHMARK");
+  console.log("  HTTP REQUEST FLOW BENCHMARK (10,000 requests)");
   console.log("═══════════════════════════════════════════════════════════════════\n");
 
   const REQUESTS = 10_000;
@@ -261,9 +268,9 @@ async function benchHttpFlow() {
     ctx.json({ ok: true });
   });
 
-  // --- 2. Auto-validate (validation in Rust, no JS roundtrip) ---
+  // --- 2. Auto-validate with JSON schema ---
   const autoValidator = new Validator();
-  autoValidator.addSchema("POST:/api/users", schemaJson);
+  autoValidator.addSchema("POST:/api/users", jsonSchemaString);
 
   const routerAutoValidate = new Router();
   routerAutoValidate.body("*", "/api/*");
@@ -271,14 +278,24 @@ async function benchHttpFlow() {
     ctx.json({ ok: true });
   });
 
-  // --- 3. Rust Validator middleware (JS calls Rust) ---
-  const validator = new Validator();
-  const routerRustMiddleware = new Router();
-  routerRustMiddleware.setValidator(validator);
-  routerRustMiddleware.body("*", "/api/*");
-  routerRustMiddleware.post(
+  // --- 3. Auto-validate with Rust builder schema ---
+  const autoBuilderValidator = new Validator();
+  autoBuilderValidator.addSchemaFromBuilder("POST:/api/users", bSchema);
+
+  const routerAutoBuilder = new Router();
+  routerAutoBuilder.body("*", "/api/*");
+  routerAutoBuilder.post("/api/users", (ctx) => {
+    ctx.json({ ok: true });
+  });
+
+  // --- 4. Rust Validator middleware (TS builder s.*) ---
+  const validatorTs = new Validator();
+  const routerTsMiddleware = new Router();
+  routerTsMiddleware.setValidator(validatorTs);
+  routerTsMiddleware.body("*", "/api/*");
+  routerTsMiddleware.post(
     "/api/users",
-    routerRustMiddleware.validate({
+    routerTsMiddleware.validate({
       body: {
         name: s.string().required().min(2),
         email: s.string().required().pattern("email"),
@@ -290,7 +307,7 @@ async function benchHttpFlow() {
     },
   );
 
-  // --- 4. Manual JS validation middleware ---
+  // --- 5. Manual JS validation middleware ---
   const routerManualValidation = new Router();
   routerManualValidation.body("*", "/api/*");
   routerManualValidation.post("/api/users", (ctx) => {
@@ -323,15 +340,15 @@ async function benchHttpFlow() {
 
     const rps = (REQUESTS / elapsed) * 1000;
     console.log(
-      `  ${name.padEnd(50)} ${formatOps(rps).padStart(10)} req/sec  (${elapsed.toFixed(0)}ms)`,
+      `  ${name.padEnd(55)} ${formatOps(rps).padStart(10)} req/sec  (${elapsed.toFixed(0)}ms)`,
     );
     return rps;
   }
 
   const noValRps = await runBench("No validation", routerNoValidation, serverPort);
 
-  const autoValRps = await runBench(
-    "Auto-validate (Rust internal, no NAPI overhead)",
+  const autoJsonRps = await runBench(
+    "Auto-validate (JSON schema)",
     routerAutoValidate,
     serverPort + 1,
     (s) => {
@@ -340,28 +357,40 @@ async function benchHttpFlow() {
     },
   );
 
-  const rustMiddlewareRps = await runBench(
-    "Rust Validator middleware (NAPI calls)",
-    routerRustMiddleware,
+  const autoBuilderRps = await runBench(
+    "Auto-validate (Rust builder schema)",
+    routerAutoBuilder,
     serverPort + 2,
+    (s) => {
+      s.setValidator(autoBuilderValidator);
+      s.setAutoValidate(true);
+    },
+  );
+
+  const tsMiddlewareRps = await runBench(
+    "Rust Validator middleware (TS s.* builder)",
+    routerTsMiddleware,
+    serverPort + 3,
   );
 
   const manualRps = await runBench(
     "Manual JS validation middleware",
     routerManualValidation,
-    serverPort + 3,
+    serverPort + 4,
   );
 
-  console.log("\n  ┌─────────────────────────────────────────────────────────────┐");
-  console.log("  │ Comparison vs No Validation baseline                        │");
-  console.log("  ├─────────────────────────────────────────────────────────────┤");
-  console.log(`  │ Auto-validate overhead:     ${((1 - autoValRps / noValRps) * 100).toFixed(1).padStart(5)}%  (best option)         │`);
-  console.log(`  │ Rust middleware overhead:   ${((1 - rustMiddlewareRps / noValRps) * 100).toFixed(1).padStart(5)}%                        │`);
-  console.log(`  │ Manual JS overhead:         ${((1 - manualRps / noValRps) * 100).toFixed(1).padStart(5)}%                        │`);
-  console.log("  ├─────────────────────────────────────────────────────────────┤");
-  console.log(`  │ Auto-validate vs Manual:    ${(autoValRps / manualRps).toFixed(2).padStart(5)}x faster                 │`);
-  console.log(`  │ Rust middleware vs Manual:  ${(rustMiddlewareRps / manualRps).toFixed(2).padStart(5)}x                       │`);
-  console.log("  └─────────────────────────────────────────────────────────────┘\n");
+  console.log("\n  ┌───────────────────────────────────────────────────────────────────┐");
+  console.log("  │ Comparison vs No Validation baseline                              │");
+  console.log("  ├───────────────────────────────────────────────────────────────────┤");
+  console.log(`  │ Auto-validate (JSON):       ${((1 - autoJsonRps / noValRps) * 100).toFixed(1).padStart(5)}% overhead                       │`);
+  console.log(`  │ Auto-validate (Builder):    ${((1 - autoBuilderRps / noValRps) * 100).toFixed(1).padStart(5)}% overhead                       │`);
+  console.log(`  │ TS middleware:               ${((1 - tsMiddlewareRps / noValRps) * 100).toFixed(1).padStart(5)}% overhead                       │`);
+  console.log(`  │ Manual JS:                  ${((1 - manualRps / noValRps) * 100).toFixed(1).padStart(5)}% overhead                       │`);
+  console.log("  ├───────────────────────────────────────────────────────────────────┤");
+  console.log(`  │ Auto-validate (Builder) vs Manual JS:  ${(autoBuilderRps / manualRps).toFixed(2).padStart(5)}x faster               │`);
+  console.log(`  │ Auto-validate (JSON) vs Manual JS:     ${(autoJsonRps / manualRps).toFixed(2).padStart(5)}x faster               │`);
+  console.log(`  │ TS middleware vs Manual JS:             ${(tsMiddlewareRps / manualRps).toFixed(2).padStart(5)}x                     │`);
+  console.log("  └───────────────────────────────────────────────────────────────────┘\n");
 }
 
 benchHttpFlow().catch(console.error);

@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use napi_derive::napi;
 
-use crate::schema::{FieldDef, RouteSchema};
+use crate::schema::{
+    CompiledField, CompiledPattern, CompiledProperties, CompiledRouteSchema, PatternRegistry,
+};
 
 // ─── Field Schema Builder (NAPI-exposed) ─────────────────────────────
 
@@ -14,7 +16,6 @@ pub struct StringField {
     pub(crate) max: Option<f64>,
     pub(crate) pattern: Option<String>,
     pub(crate) enum_values: Option<Vec<String>>,
-    pub(crate) default: Option<String>,
 }
 
 impl Default for StringField {
@@ -33,7 +34,6 @@ impl StringField {
             max: None,
             pattern: None,
             enum_values: None,
-            default: None,
         }
     }
 
@@ -67,21 +67,20 @@ impl StringField {
         self.enum_values = Some(values);
     }
 
-    /// Set default value.
-    #[napi]
-    pub fn set_default(&mut self, value: String) {
-        self.default = Some(value);
-    }
-
-    /// Convert to FieldDef (internal).
-    pub(crate) fn to_field_def(&self) -> FieldDef {
-        FieldDef::String {
+    /// Compile to CompiledField directly (zero-copy, no JSON).
+    pub(crate) fn compile(&self, registry: Option<&PatternRegistry>) -> CompiledField {
+        CompiledField::String {
             required: self.required,
             min: self.min,
             max: self.max,
-            pattern: self.pattern.clone(),
-            enum_values: self.enum_values.clone(),
-            default: self.default.clone(),
+            pattern: self
+                .pattern
+                .as_deref()
+                .and_then(|p| compile_pattern(p, registry)),
+            enum_values: self
+                .enum_values
+                .as_ref()
+                .map(|v| v.iter().map(|s| s.as_str().into()).collect()),
         }
     }
 }
@@ -93,7 +92,6 @@ pub struct NumberField {
     pub(crate) required: bool,
     pub(crate) min: Option<f64>,
     pub(crate) max: Option<f64>,
-    pub(crate) default: Option<f64>,
 }
 
 impl Default for NumberField {
@@ -111,7 +109,6 @@ impl NumberField {
             required: false,
             min: None,
             max: None,
-            default: None,
         }
     }
 
@@ -139,28 +136,20 @@ impl NumberField {
         self.max = Some(value);
     }
 
-    /// Set default value.
-    #[napi]
-    pub fn set_default(&mut self, value: f64) {
-        self.default = Some(value);
-    }
-
-    /// Convert to FieldDef (internal).
-    pub(crate) fn to_field_def(&self) -> FieldDef {
+    /// Compile to CompiledField directly (zero-copy, no JSON).
+    pub(crate) fn compile(&self) -> CompiledField {
         if self.is_integer {
-            FieldDef::Integer {
+            CompiledField::Integer {
                 required: self.required,
                 min: self.min,
                 max: self.max,
-                default: self.default,
             }
         } else {
-            FieldDef::Number {
+            CompiledField::Number {
                 required: self.required,
                 min: self.min,
                 max: self.max,
                 int: false,
-                default: self.default,
             }
         }
     }
@@ -170,7 +159,6 @@ impl NumberField {
 #[napi]
 pub struct BooleanField {
     pub(crate) required: bool,
-    pub(crate) default: Option<bool>,
 }
 
 impl Default for BooleanField {
@@ -183,10 +171,7 @@ impl Default for BooleanField {
 impl BooleanField {
     #[napi(constructor)]
     pub fn new() -> Self {
-        BooleanField {
-            required: false,
-            default: None,
-        }
+        BooleanField { required: false }
     }
 
     /// Mark field as required.
@@ -195,17 +180,10 @@ impl BooleanField {
         self.required = true;
     }
 
-    /// Set default value.
-    #[napi]
-    pub fn set_default(&mut self, value: bool) {
-        self.default = Some(value);
-    }
-
-    /// Convert to FieldDef (internal).
-    pub(crate) fn to_field_def(&self) -> FieldDef {
-        FieldDef::Boolean {
+    /// Compile to CompiledField directly (zero-copy, no JSON).
+    pub(crate) fn compile(&self) -> CompiledField {
+        CompiledField::Boolean {
             required: self.required,
-            default: self.default,
         }
     }
 }
@@ -214,7 +192,7 @@ impl BooleanField {
 #[napi]
 pub struct ObjectField {
     pub(crate) required: bool,
-    pub(crate) properties: HashMap<String, FieldDef>,
+    pub(crate) properties: Vec<(String, CompiledField)>,
 }
 
 impl Default for ObjectField {
@@ -229,7 +207,7 @@ impl ObjectField {
     pub fn new() -> Self {
         ObjectField {
             required: false,
-            properties: HashMap::new(),
+            properties: Vec::new(),
         }
     }
 
@@ -241,39 +219,46 @@ impl ObjectField {
 
     /// Add a string property.
     #[napi]
-    pub fn add_string(&mut self, key: String, field: &StringField) {
-        self.properties.insert(key, field.to_field_def());
+    pub fn add_string(&mut self, key: String, field: &StringField, registry: &PatternRegistry) {
+        self.properties
+            .push((key, field.compile(Some(registry))));
     }
 
     /// Add a number property.
     #[napi]
     pub fn add_number(&mut self, key: String, field: &NumberField) {
-        self.properties.insert(key, field.to_field_def());
+        self.properties.push((key, field.compile()));
     }
 
     /// Add a boolean property.
     #[napi]
     pub fn add_boolean(&mut self, key: String, field: &BooleanField) {
-        self.properties.insert(key, field.to_field_def());
+        self.properties.push((key, field.compile()));
     }
 
     /// Add an object property.
     #[napi]
     pub fn add_object(&mut self, key: String, field: &ObjectField) {
-        self.properties.insert(key, field.to_field_def());
+        self.properties.push((key, field.compile()));
     }
 
     /// Add an array property.
     #[napi]
     pub fn add_array(&mut self, key: String, field: &ArrayField) {
-        self.properties.insert(key, field.to_field_def());
+        self.properties.push((key, field.compile()));
     }
 
-    /// Convert to FieldDef (internal).
-    pub(crate) fn to_field_def(&self) -> FieldDef {
-        FieldDef::Object {
+    /// Compile to CompiledField directly (zero-copy, no JSON).
+    pub(crate) fn compile(&self) -> CompiledField {
+        let mut props: Vec<(Box<str>, CompiledField)> = self
+            .properties
+            .iter()
+            .map(|(k, v)| (k.as_str().into(), v.clone()))
+            .collect();
+        props.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        CompiledField::Object {
             required: self.required,
-            properties: Some(self.properties.clone()),
+            properties: Some(props.into_boxed_slice()),
         }
     }
 }
@@ -282,7 +267,7 @@ impl ObjectField {
 #[napi]
 pub struct ArrayField {
     pub(crate) required: bool,
-    pub(crate) items: Option<Box<FieldDef>>,
+    pub(crate) items: Option<Box<CompiledField>>,
     pub(crate) min: Option<f64>,
     pub(crate) max: Option<f64>,
 }
@@ -325,37 +310,37 @@ impl ArrayField {
 
     /// Set item type as string.
     #[napi]
-    pub fn of_string(&mut self, field: &StringField) {
-        self.items = Some(Box::new(field.to_field_def()));
+    pub fn of_string(&mut self, field: &StringField, registry: &PatternRegistry) {
+        self.items = Some(Box::new(field.compile(Some(registry))));
     }
 
     /// Set item type as number.
     #[napi]
     pub fn of_number(&mut self, field: &NumberField) {
-        self.items = Some(Box::new(field.to_field_def()));
+        self.items = Some(Box::new(field.compile()));
     }
 
     /// Set item type as boolean.
     #[napi]
     pub fn of_boolean(&mut self, field: &BooleanField) {
-        self.items = Some(Box::new(field.to_field_def()));
+        self.items = Some(Box::new(field.compile()));
     }
 
     /// Set item type as object.
     #[napi]
     pub fn of_object(&mut self, field: &ObjectField) {
-        self.items = Some(Box::new(field.to_field_def()));
+        self.items = Some(Box::new(field.compile()));
     }
 
     /// Set item type as array (nested).
     #[napi]
     pub fn of_array(&mut self, field: &ArrayField) {
-        self.items = Some(Box::new(field.to_field_def()));
+        self.items = Some(Box::new(field.compile()));
     }
 
-    /// Convert to FieldDef (internal).
-    pub(crate) fn to_field_def(&self) -> FieldDef {
-        FieldDef::Array {
+    /// Compile to CompiledField directly (zero-copy, no JSON).
+    pub(crate) fn compile(&self) -> CompiledField {
+        CompiledField::Array {
             required: self.required,
             items: self.items.clone(),
             min: self.min,
@@ -364,34 +349,26 @@ impl ArrayField {
     }
 }
 
-// ─── Schema Builder (replaces the `s` factory + schema definition) ───
+// ─── Schema Builder (zero-copy, compiles directly to CompiledRouteSchema)
 
 /// Schema builder for defining validation rules for a route.
-/// Rust-native builder — no JSON serialization needed.
+/// Compiles directly to Rust — no JSON serialization.
 ///
 /// @example
 /// ```ts
-/// const nameField = new StringField()
-/// nameField.required()
-/// nameField.setMin(2)
-/// nameField.setMax(100)
-///
-/// const emailField = new StringField()
-/// emailField.required()
-/// emailField.setPattern("email")
-///
 /// const schema = new SchemaBuilder()
-/// schema.addBodyString("name", nameField)
-/// schema.addBodyString("email", emailField)
-/// schema.addQueryNumber("page", new NumberField())
+/// schema.addBodyString("name", new StringField().tap(f => { f.required(); f.setMin(2) }))
+/// schema.addBodyString("email", new StringField().tap(f => { f.required(); f.setPattern("email") }))
+/// schema.addQueryNumber("page", new NumberField().tap(f => { f.integer(); f.setMin(1) }))
 ///
 /// validator.addSchemaFromBuilder("POST:/users", schema)
 /// ```
 #[napi]
 pub struct SchemaBuilder {
-    body: HashMap<String, FieldDef>,
-    query: HashMap<String, FieldDef>,
-    params: HashMap<String, FieldDef>,
+    body: Vec<(String, CompiledField)>,
+    query: Vec<(String, CompiledField)>,
+    params: Vec<(String, CompiledField)>,
+    registry: Option<PatternRegistry>,
 }
 
 impl Default for SchemaBuilder {
@@ -405,84 +382,115 @@ impl SchemaBuilder {
     #[napi(constructor)]
     pub fn new() -> Self {
         SchemaBuilder {
-            body: HashMap::new(),
-            query: HashMap::new(),
-            params: HashMap::new(),
+            body: Vec::new(),
+            query: Vec::new(),
+            params: Vec::new(),
+            registry: None,
         }
+    }
+
+    /// Set the pattern registry for custom pattern compilation.
+    #[napi]
+    pub fn set_pattern_registry(&mut self, registry: &PatternRegistry) {
+        self.registry = Some(registry.clone());
     }
 
     /// Add a body field with a string schema.
     #[napi]
     pub fn add_body_string(&mut self, key: String, field: &StringField) {
-        self.body.insert(key, field.to_field_def());
+        self.body
+            .push((key, field.compile(self.registry.as_ref())));
     }
 
     /// Add a body field with a number schema.
     #[napi]
     pub fn add_body_number(&mut self, key: String, field: &NumberField) {
-        self.body.insert(key, field.to_field_def());
+        self.body.push((key, field.compile()));
     }
 
     /// Add a body field with a boolean schema.
     #[napi]
     pub fn add_body_boolean(&mut self, key: String, field: &BooleanField) {
-        self.body.insert(key, field.to_field_def());
+        self.body.push((key, field.compile()));
     }
 
     /// Add a body field with an object schema.
     #[napi]
     pub fn add_body_object(&mut self, key: String, field: &ObjectField) {
-        self.body.insert(key, field.to_field_def());
+        self.body.push((key, field.compile()));
     }
 
     /// Add a body field with an array schema.
     #[napi]
     pub fn add_body_array(&mut self, key: String, field: &ArrayField) {
-        self.body.insert(key, field.to_field_def());
+        self.body.push((key, field.compile()));
     }
 
     /// Add a query parameter field with a string schema.
     #[napi]
     pub fn add_query_string(&mut self, key: String, field: &StringField) {
-        self.query.insert(key, field.to_field_def());
+        self.query
+            .push((key, field.compile(self.registry.as_ref())));
     }
 
     /// Add a query parameter field with a number schema.
     #[napi]
     pub fn add_query_number(&mut self, key: String, field: &NumberField) {
-        self.query.insert(key, field.to_field_def());
+        self.query.push((key, field.compile()));
     }
 
     /// Add a path parameter field with a string schema.
     #[napi]
     pub fn add_param_string(&mut self, key: String, field: &StringField) {
-        self.params.insert(key, field.to_field_def());
+        self.params
+            .push((key, field.compile(self.registry.as_ref())));
     }
 
     /// Add a path parameter field with a number schema.
     #[napi]
     pub fn add_param_number(&mut self, key: String, field: &NumberField) {
-        self.params.insert(key, field.to_field_def());
+        self.params.push((key, field.compile()));
     }
 
-    /// Build the RouteSchema (internal).
-    pub(crate) fn build(&self) -> RouteSchema {
-        RouteSchema {
-            body: if self.body.is_empty() {
-                None
-            } else {
-                Some(self.body.clone())
-            },
-            query: if self.query.is_empty() {
-                None
-            } else {
-                Some(self.query.clone())
-            },
-            params: if self.params.is_empty() {
-                None
-            } else {
-                Some(self.params.clone())
-            },
+    /// Compile directly to CompiledRouteSchema (zero-copy, no JSON).
+    pub(crate) fn compile(&self) -> CompiledRouteSchema {
+        let compile_vec =
+            |v: &[(String, CompiledField)]| -> Option<CompiledProperties> {
+                if v.is_empty() {
+                    return None;
+                }
+                let mut props: Vec<(Box<str>, CompiledField)> = v
+                    .iter()
+                    .map(|(k, v)| (k.as_str().into(), v.clone()))
+                    .collect();
+                props.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+                Some(props.into_boxed_slice())
+            };
+
+        CompiledRouteSchema {
+            body: compile_vec(&self.body),
+            query: compile_vec(&self.query),
+            params: compile_vec(&self.params),
         }
+    }
+}
+
+// ─── Pattern compilation helper ──────────────────────────────────────
+
+fn compile_pattern(s: &str, registry: Option<&PatternRegistry>) -> Option<CompiledPattern> {
+    match s {
+        "email" => Some(CompiledPattern::Email),
+        "url" => Some(CompiledPattern::Url),
+        "uuid" => Some(CompiledPattern::Uuid),
+        "alpha" => Some(CompiledPattern::Alpha),
+        "alphanumeric" => Some(CompiledPattern::Alphanumeric),
+        "numeric" => Some(CompiledPattern::Numeric),
+        name => registry.and_then(|reg| {
+            if reg.contains_key(name) {
+                Some(CompiledPattern::Custom(name.to_string()))
+            } else {
+                None
+            }
+        }),
     }
 }

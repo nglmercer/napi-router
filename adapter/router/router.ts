@@ -68,7 +68,7 @@ import {
   validate as createValidateMiddleware,
   type RouteSchemaDefinition,
 } from "./router/validator";
-import type { Validator } from "../../index.js";
+import type { Validator, SchemaBuilder } from "../../index.js";
 export type ErrorHandler = (err: Error, ctx: Context) => Awaitable<void>;
 
 /**
