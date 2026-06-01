@@ -27,8 +27,8 @@ Bun.lockb
 
 # Build outputs
 target/
-dist/
-dist/**/*
+native/target/
+*.node
 
 # TypeScript
 tsconfig.json

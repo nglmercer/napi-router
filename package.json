@@ -1,6 +1,6 @@
 {
   "name": "napi-router",
-  "version": "1.2.2",
+  "version": "1.2.4",
   "description": "Bun-compatible HTTP server powered by Rust via NAPI — works in Node.js, Bun, and Deno",
   "keywords": [
     "napi",
@@ -23,13 +23,13 @@
   },
   "license": "MIT",
   "type": "module",
-  "main": "index.js",
-  "types": "index.d.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./index.d.ts",
-      "require": "./index.js",
-      "default": "./index.js"
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./adapter": {
       "types": "./dist/adapter/serve.d.ts",
@@ -53,16 +53,13 @@
     }
   },
   "files": [
-    "index.js",
-    "index.d.ts",
-    "*.node",
     "dist/",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "napi build --platform --release && cp index.js index.d.ts dist/",
-    "build:debug": "napi build --platform && cp index.js index.d.ts dist/",
+    "build": "napi build --platform --release && cp index.js index.d.ts dist/ && cp *.node dist/ 2>/dev/null || true",
+    "build:debug": "napi build --platform && cp index.js index.d.ts dist/ && cp *.node dist/ 2>/dev/null || true",
     "build:ts": "tsc -p tsconfig.build.json",
     "clean": "napi clean && cargo clean && rm -rf dist",
     "test": "bun test",
