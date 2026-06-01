@@ -36,11 +36,7 @@ router.post("/register", async (ctx) => {
     return;
   }
 
-  const { name, email } = result.data as {
-    name: string;
-    email: string;
-    password: string;
-  };
+  const { name, email } = result.data;
   ctx.status(201).json({ message: "User registered", user: { name, email } });
 });
 
