@@ -154,7 +154,7 @@ When using **auto-validate mode**, validation happens inside Rust before calling
 ```ts
 import { Validator } from "napi-router";
 import { Router } from "napi-router/adapter/router";
-import { s } from "napi-router/adapter/router/router/validator";
+import { s } from "napi-router/adapter/router/validator";
 
 const validator = new Validator();
 const router = new Router();
