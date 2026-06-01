@@ -499,6 +499,7 @@ export class MockResponseBuilder extends EventTarget {
           if (next && typeof (next as Promise<void>).then === "function") {
             return next;
           }
+          return;
         });
       }
       return run();
