@@ -13,7 +13,7 @@
 import { Validator, SchemaBuilder, StringField, NumberField, BooleanField } from "../index.js";
 import { serve, type Server } from "../adapter/serve.js";
 import { Router } from "../adapter/router/router.js";
-import { s } from "../adapter/router/router/validator.js";
+import { validate, s } from "../adapter/router/router/validator.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -288,21 +288,22 @@ async function benchHttpFlow() {
     ctx.json({ ok: true });
   });
 
-  // --- 4. Rust Validator middleware (TS builder s.*) ---
+  // --- 4. Standalone validate() with s.* builders ---
   const validatorTs = new Validator();
   const routerTsMiddleware = new Router();
-  routerTsMiddleware.setValidator(validatorTs);
   routerTsMiddleware.body("*", "/api/*");
   routerTsMiddleware.post(
     "/api/users",
-    routerTsMiddleware.validate({
-      body: {
+    async (ctx) => {
+      const result = validate(ctx.req.parsedBody, {
         name: s.string().required().min(2),
         email: s.string().required().pattern("email"),
         age: s.integer().min(0).max(200),
-      },
-    }),
-    (ctx) => {
+      }, validatorTs);
+      if (!result.success) {
+        ctx.status(400).json({ error: "Validation failed", errors: result.errors });
+        return;
+      }
       ctx.json({ ok: true });
     },
   );

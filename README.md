@@ -136,129 +136,44 @@ await raw.listen(3000);
 
 > The adapter wraps this low-level API. Most users should use `serve()`.
 
-## Validator (Rust-side Schema Validation)
+## Validator
 
-The Validator provides **high-performance request validation** that runs entirely in Rust. It validates body, query parameters, and path parameters against defined schemas before the handler executes.
-
-### Why Rust-side validation?
-
-```
-Auto-validate (Rust internal)     5.63K req/sec  ← 2.26x faster
-Manual JS validation middleware   2.49K req/sec
-```
-
-When using **auto-validate mode**, validation happens inside Rust before calling JS — zero NAPI boundary overhead.
+The Validator provides **high-performance request validation** in Rust. Use the standalone `validate()` function — like Zod.
 
 ### Quick Start
 
 ```ts
 import { Validator } from "napi-router";
-import { Router } from "napi-router/adapter/router";
-import { s } from "napi-router/adapter/router/validator";
+import { validate, s } from "napi-router/adapter/router/validator";
 
 const validator = new Validator();
-const router = new Router();
-router.setValidator(validator);
-router.body("*", "/api/*");
 
-router.post("/users",
-  router.validate({
-    body: {
-      name: s.string().required().min(2).max(100),
-      email: s.string().required().pattern("email"),
-      age: s.integer().min(0).max(200),
-      role: s.string().enum("admin", "user", "guest"),
-    },
-    query: {
-      format: s.string().enum("short", "full"),
-    },
-  }),
-  async (ctx) => {
-    // Body is validated — safe to use
-    const user = ctx.req.parsedBody;
-    ctx.json({ created: true, user });
+router.post("/users", async (ctx) => {
+  const body = await ctx.req.json();
+
+  const result = validate(body, {
+    name: s.string().required().min(2).max(100),
+    email: s.string().required().pattern("email"),
+    age: s.integer().min(0).max(200),
+    role: s.string().enum("admin", "user", "guest"),
+  }, validator);
+
+  if (!result.success) {
+    ctx.status(400).json({ errors: result.errors });
+    return;
   }
-);
 
-const server = await serve({ port: 3000, fetch: router.handle });
-```
-
-### Quick Start (Rust Builder — Fastest)
-
-```ts
-import { Validator, SchemaBuilder, StringField, NumberField } from "napi-router";
-import { Router } from "napi-router/adapter/router";
-
-const validator = new Validator();
-const router = new Router();
-router.setValidator(validator);
-router.body("*", "/api/*");
-
-// Build schema in Rust — zero JSON
-const schema = new SchemaBuilder();
-const nameField = new StringField(); nameField.required(); nameField.setMin(2);
-schema.addBodyString("name", nameField);
-const emailField = new StringField(); emailField.required(); emailField.setPattern("email");
-schema.addBodyString("email", emailField);
-const ageField = new NumberField(); ageField.integer(); ageField.setMin(0); ageField.setMax(200);
-schema.addBodyNumber("age", ageField);
-
-// Pass SchemaBuilder directly — zero JSON
-router.post("/users", router.validate(schema), (ctx) => {
-  ctx.json({ created: true });
+  // result.data is validated
+  ctx.json({ created: true, user: result.data });
 });
-
-const server = await serve({ port: 3000, fetch: router.handle });
-router.enableAutoValidate(server);  // Validation in Rust, 2.18x faster
-```
-
-### Auto-Validate Mode (Fastest)
-
-For maximum performance, enable auto-validate on the server. Validation runs inside Rust before calling JS — no NAPI overhead:
-
-```ts
-import { Validator } from "napi-router";
-import { Router } from "napi-router/adapter/router";
-import { s } from "napi-router/adapter/router/router/validator";
-
-const validator = new Validator();
-const router = new Router();
-router.setValidator(validator);
-router.body("*", "/api/*");
-
-router.post("/api/users",
-  router.validate({
-    body: {
-      name: s.string({ required: true, min: 2 }),
-      email: s.string({ required: true, pattern: "email" }),
-    },
-  }),
-  (ctx) => {
-    ctx.json({ ok: true });
-  }
-);
-
-const server = await serve({ port: 3000, fetch: router.handle });
-router.enableAutoValidate(server);  // ← Validation in Rust, 2.16x faster
-```
-
-When validation fails, the server returns `400 Bad Request` with structured errors **without calling JS**:
-
-```json
-{
-  "errors": [
-    { "field": "body.name", "message": "String length must be >= 2, got 1", "code": "min_length" },
-    { "field": "body.email", "message": "Value does not match pattern", "code": "pattern" }
-  ]
-}
 ```
 
 ### Schema Builder (`s.*`)
 
-Fluent TypeScript API for defining field schemas with method chaining:
+Fluent TypeScript API for defining field schemas:
 
 ```ts
-import { s } from "napi-router/adapter/router/router/validator";
+import { s } from "napi-router/adapter/router/validator";
 
 // String
 s.string().required().min(2).max(100)
@@ -270,9 +185,6 @@ s.number().min(0).max(100)
 
 // Integer
 s.integer().required().min(1).max(1000)
-
-// Number constrained to integer
-s.number().integer().min(0)
 
 // Boolean
 s.boolean().required()
@@ -296,96 +208,16 @@ s.array(
 ).min(1)
 ```
 
-### Rust Builder API (Fastest)
-
-For maximum performance, use the Rust-native builders. No JSON serialization overhead — schemas are built directly in Rust memory:
-
-```ts
-import {
-  Validator,
-  SchemaBuilder,
-  StringField,
-  NumberField,
-  BooleanField,
-  ObjectField,
-  ArrayField,
-} from "napi-router";
-import { Router } from "napi-router/adapter/router";
-
-const validator = new Validator();
-const router = new Router();
-router.setValidator(validator);
-
-// Build schema in Rust
-const schema = new SchemaBuilder();
-
-const nameField = new StringField();
-nameField.required();
-nameField.setMin(2);
-nameField.setMax(100);
-schema.addBodyString("name", nameField);
-
-const emailField = new StringField();
-emailField.required();
-emailField.setPattern("email");
-schema.addBodyString("email", emailField);
-
-const ageField = new NumberField();
-ageField.integer();
-ageField.setMin(0);
-ageField.setMax(200);
-schema.addBodyNumber("age", ageField);
-
-// Nested objects
-const addressField = new ObjectField();
-addressField.required();
-const streetField = new StringField();
-streetField.required();
-addressField.addString("street", streetField);
-const cityField = new StringField();
-cityField.required();
-addressField.addString("city", cityField);
-schema.addBodyObject("address", addressField);
-
-// Arrays
-const tagsField = new ArrayField();
-tagsField.setMin(1);
-tagsField.setMax(10);
-const tagItem = new StringField();
-tagsField.ofString(tagItem);
-schema.addBodyArray("tags", tagsField);
-
-// Query params
-const pageField = new NumberField();
-pageField.integer();
-pageField.setMin(1);
-schema.addQueryNumber("page", pageField);
-
-// Register schema
-validator.addSchemaFromBuilder("POST:/users", schema);
-```
-
-#### Rust Builder Classes
-
-| Class | Methods | Description |
-|-------|---------|-------------|
-| `StringField` | `.required()`, `.setMin(n)`, `.setMax(n)`, `.setPattern(name)`, `.setEnum([...])`, `.setDefault(v)` | String field |
-| `NumberField` | `.required()`, `.setMin(n)`, `.setMax(n)`, `.integer()`, `.setDefault(v)` | Number field |
-| `BooleanField` | `.required()`, `.setDefault(v)` | Boolean field |
-| `ObjectField` | `.required()`, `.addString(k, f)`, `.addNumber(k, f)`, `.addBoolean(k, f)`, `.addObject(k, f)`, `.addArray(k, f)` | Object with nested fields |
-| `ArrayField` | `.required()`, `.setMin(n)`, `.setMax(n)`, `.ofString(f)`, `.ofNumber(f)`, `.ofObject(f)`, `.ofArray(f)` | Array with item type |
-| `SchemaBuilder` | `.addBodyString(k, f)`, `.addBodyNumber(k, f)`, `.addBodyBoolean(k, f)`, `.addBodyObject(k, f)`, `.addBodyArray(k, f)`, `.addQueryString(k, f)`, `.addQueryNumber(k, f)`, `.addParamString(k, f)`, `.addParamNumber(k, f)` | Route schema builder |
-
 ### Schema Types
 
 | Type | Methods | Description |
 |------|---------|-------------|
-| `s.string()` | `.required()`, `.min(n)`, `.max(n)`, `.pattern(name)`, `.enum(...values)`, `.default(v)` | String value with length/pattern constraints |
-| `s.number()` | `.required()`, `.min(n)`, `.max(n)`, `.integer()`, `.default(v)` | Float number, optionally integer-only |
-| `s.integer()` | `.required()`, `.min(n)`, `.max(n)`, `.default(v)` | Integer number (enforced) |
-| `s.boolean()` | `.required()`, `.default(v)` | Boolean value |
-| `s.object(props)` | `.required()`, `.default(v)` | Nested object with field schemas |
-| `s.array(items)` | `.required()`, `.min(n)`, `.max(n)`, `.default(v)` | Array with item schema and length constraints |
+| `s.string()` | `.required()`, `.min(n)`, `.max(n)`, `.pattern(name)`, `.enum(...values)` | String value with length/pattern constraints |
+| `s.number()` | `.required()`, `.min(n)`, `.max(n)`, `.integer()` | Float number, optionally integer-only |
+| `s.integer()` | `.required()`, `.min(n)`, `.max(n)` | Integer number (enforced) |
+| `s.boolean()` | `.required()` | Boolean value |
+| `s.object(props)` | `.required()` | Nested object with field schemas |
+| `s.array(items)` | `.required()`, `.min(n)`, `.max(n)` | Array with item schema and length constraints |
 
 ### Built-in Patterns
 
@@ -408,20 +240,14 @@ const validator = new Validator();
 // Register custom patterns
 validator.addPattern("phone", "^\\+?[1-9]\\d{1,14}$");
 validator.addPattern("slug", "^[a-z0-9]+(?:-[a-z0-9]+)*$");
-validator.addPattern("hex_color", "^#[0-9a-fA-F]{6}$");
-validator.addPattern("credit_card", "^\\d{4}-?\\d{4}-?\\d{4}-?\\d{4}$");
+validator.addPattern("hex_color", "^#[0-a-fA-F]{6}$");
 
 // Use in schemas
-router.post("/contact",
-  router.validate({
-    body: {
-      phone: s.string().required().pattern("phone"),
-      slug: s.string().required().pattern("slug"),
-      color: s.string().pattern("hex_color"),
-    },
-  }),
-  handler
-);
+const result = validate(body, {
+  phone: s.string().required().pattern("phone"),
+  slug: s.string().required().pattern("slug"),
+  color: s.string().pattern("hex_color"),
+}, validator);
 ```
 
 Pattern management:
@@ -430,6 +256,92 @@ Pattern management:
 validator.addPattern(name, regex);     // Register a pattern
 validator.hasPattern(name);            // Check if pattern exists
 validator.removePattern(name);         // Remove a pattern
+```
+
+### Auto-Validate Mode (Fastest)
+
+For maximum performance, enable auto-validate on the server. Validation runs inside Rust before calling JS — zero NAPI overhead:
+
+```ts
+import { Validator } from "napi-router";
+import { Router } from "napi-router/adapter/router";
+import { validate, s } from "napi-router/adapter/router/validator";
+
+const validator = new Validator();
+const router = new Router();
+
+router.post("/api/users", async (ctx) => {
+  const body = await ctx.req.json();
+  const result = validate(body, {
+    name: s.string().required().min(2),
+    email: s.string().required().pattern("email"),
+  }, validator);
+  if (!result.success) {
+    ctx.status(400).json({ errors: result.errors });
+    return;
+  }
+  ctx.json({ ok: true });
+});
+
+const server = await serve({ port: 3000, fetch: router.handle });
+
+// Enable auto-validate (Rust validates before calling JS)
+server.setValidator(validator);
+server.setAutoValidate(true);
+```
+
+When validation fails, the server returns `400 Bad Request` with structured errors **without calling JS**:
+
+```json
+{
+  "errors": [
+    { "field": "body.name", "message": "String length must be >= 2, got 1", "code": "min_length" },
+    { "field": "body.email", "message": "Value does not match pattern", "code": "pattern" }
+  ]
+}
+```
+
+### Validation Errors
+
+Errors are returned in a structured format:
+
+```ts
+interface ValidationError {
+  field: string;    // e.g. "body.name"
+  message: string;  // Human-readable description
+  code: string;     // Machine-readable code
+}
+```
+
+Error codes:
+
+| Code | Meaning |
+|------|---------|
+| `required` | Field is missing |
+| `type` | Wrong type (expected string, got number, etc.) |
+| `min_length` | String too short |
+| `max_length` | String too long |
+| `min` | Number below minimum |
+| `max` | Number above maximum |
+| `integer` | Expected integer |
+| `pattern` | Doesn't match pattern |
+| `enum` | Not in allowed values |
+| `min_items` | Array too short |
+| `max_items` | Array too long |
+| `invalid_json` | Body is not valid JSON |
+
+### Zero-Duplicate Parsing
+
+When using `router.body()` with the validator, the body is parsed once in Rust and reused:
+
+```
+Request → Rust: body bytes → serde_json::from_slice (zero-copy)
+                              ↓
+                    parsedBody string → JS
+                              ↓
+                    bodyParser reuses it (no re-parse)
+                              ↓
+                    validator reuses it (no re-parse)
 ```
 
 ### Validator API
@@ -468,118 +380,11 @@ validator.clear();                      // remove all
 validator.schemaCount();                // number
 ```
 
-### Server API
-
-```ts
-const server = await serve({ port: 3000, fetch: router.handle });
-
-// Set validator for auto-validate mode
-server.setValidator(validator);
-
-// Enable/disable auto-validation
-server.setAutoValidate(true);
-```
-
-### Router API
-
-```ts
-const router = new Router();
-
-// Set validator (required before using router.validate())
-router.setValidator(validator);
-
-// Register validation middleware for a route
-// Method and path are auto-detected from the route registration
-router.post("/users",
-  router.validate({
-    body: { name: s.string().required() },
-    query: { format: s.string().enum("short", "full") },
-    params: { id: s.integer().required().min(1) },
-  }),
-  handler
-);
-
-// Enable auto-validate mode (validation in Rust, 2.16x faster)
-router.enableAutoValidate(server);
-
-// Get the validator instance
-const v = router.getValidator();
-```
-
-### Validation Errors
-
-Errors are returned in a structured format:
-
-```ts
-interface ValidationErr {
-  field: string;    // e.g. "body.name", "query.page", "params.id"
-  message: string;  // Human-readable description
-  code: string;     // Machine-readable code
-}
-```
-
-Error codes:
-
-| Code | Meaning |
-|------|---------|
-| `required` | Field is missing |
-| `type` | Wrong type (expected string, got number, etc.) |
-| `min_length` | String too short |
-| `max_length` | String too long |
-| `min` | Number below minimum |
-| `max` | Number above maximum |
-| `integer` | Expected integer |
-| `pattern` | Doesn't match pattern |
-| `enum` | Not in allowed values |
-| `min_items` | Array too short |
-| `max_items` | Array too long |
-| `invalid_json` | Body is not valid JSON |
-
-### Zero-Duplicate Parsing
-
-When using `router.body()` with the validator, the body is parsed once in Rust and reused:
-
-```
-Request → Rust: body bytes → serde_json::from_slice (zero-copy)
-                              ↓
-                    parsedBody string → JS
-                              ↓
-                    bodyParser reuses it (no re-parse)
-                              ↓
-                    validator reuses it (no re-parse)
-```
-
 ### Benchmark
 
 ```bash
 bun bench/validator.bench.ts
 ```
-
-Results (AMD Ryzen 7, Linux):
-
-```
-SCHEMA REGISTRATION
-───────────────────────────────────────────────────────────
-JSON string: validator.addSchema()              80.31K ops/sec
-Rust Builder: validator.addSchemaFromBuilder()  36.02K ops/sec
-
-VALIDATION (valid body)
-───────────────────────────────────────────────────────────
-Rust validateBody(JSON schema)       320.44K ops/sec
-Rust validateBody(Builder schema)    310.99K ops/sec
-Rust validateBodyBytes               288.73K ops/sec
-Manual JS: JSON.parse + validate     988.15K ops/sec
-
-HTTP REQUEST FLOW (10,000 requests)
-───────────────────────────────────────────────────────────
-No validation                                           2.68K req/sec
-Auto-validate (JSON schema)                             5.61K req/sec  ← 2.18x faster
-Auto-validate (Rust builder schema)                     5.40K req/sec  ← 2.09x faster
-Rust Validator middleware (TS s.* builder)              2.48K req/sec
-Manual JS validation middleware                         2.58K req/sec
-```
-
-**Auto-validate** is recommended for production workloads. The Rust builder schema avoids JSON serialization for schema registration. The TS `s.*` builder and manual JS are equivalent in the middleware path (NAPI overhead dominates).
 
 ## Benchmarks
 
@@ -612,7 +417,7 @@ adapter/          TypeScript adapter (Bun-compatible serve() API)
 ├── serve.ts
 ├── router/       Express-like router
 │   ├── router.ts           Router class
-│   ├── router/validator.ts Validation middleware + TS schema builder (s.*)
+│   ├── router/validator.ts Standalone validate() + TS schema builder (s.*)
 │   ├── router/handler.ts   Request routing engine
 │   ├── router/bodyParser.ts Body parsing (reuses Rust-parsed data)
 │   └── ...
@@ -623,6 +428,7 @@ bench/            Benchmark scripts
 examples/         Example usage
 ├── dev.ts        Basic HTTP server
 ├── upload-download.ts  File upload/download demo
+├── validators.ts       Validator examples (register/login)
 test/             Test suite
 ├── validator.test.ts  Validator + schema tests
 scripts/          Utility scripts

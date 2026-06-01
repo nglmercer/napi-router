@@ -1,4 +1,3 @@
-import type { RequestMiddleware, Context, NRequest } from "../types"
 import type { Validator as ValidatorType } from "../../../index.js"
 import {
     SchemaBuilder as RustSchemaBuilder,
@@ -9,7 +8,6 @@ import {
     ArrayField as RustArrayField,
 } from "../../../index.js"
 
-// Re-export Rust builders for direct use
 export {
     RustSchemaBuilder as SchemaBuilder,
     RustStringField as StringField,
@@ -19,7 +17,7 @@ export {
     RustArrayField as ArrayField,
 }
 
-// ─── Field Schema (TS-based, for s.* builder) ────────────────────────
+// ─── Field Schema ────────────────────────────────────────────────────
 
 export interface FieldSchema {
     type: "string" | "number" | "integer" | "boolean" | "object" | "array"
@@ -34,14 +32,7 @@ export interface FieldSchema {
     properties?: Record<string, FieldSchema>
 }
 
-/** A field definition can be a raw FieldSchema or a TS builder instance. */
 export type FieldDef = FieldSchema | BaseBuilder<any>
-
-export interface RouteSchemaDefinition {
-    body?: Record<string, FieldDef>
-    query?: Record<string, FieldDef>
-    params?: Record<string, FieldDef>
-}
 
 export interface ValidationError {
     field: string
@@ -49,274 +40,171 @@ export interface ValidationError {
     code: string
 }
 
-export interface ValidationResult {
-    success: boolean
-    errors?: ValidationError[]
-    data?: string
+export type ValidationResult<T = unknown> =
+    | { success: true; data: T }
+    | { success: false; errors: ValidationError[] }
+
+// ─── Type Inference ──────────────────────────────────────────────────
+
+/** Infer the output type of a single field builder. */
+export type InferField<T> =
+    T extends StringBuilder ? string
+    : T extends NumberBuilder ? number
+    : T extends BooleanBuilder ? boolean
+    : T extends ArrayBuilder<infer Item> ? Item[]
+    : T extends ObjectBuilder<infer Props> ? Props
+    : T extends { __output: infer O } ? O
+    : unknown
+
+/** Infer the output type of a fields record. */
+export type InferFields<T extends Record<string, FieldDef>> = {
+    [K in keyof T]: InferField<T[K]>
 }
 
-// ─── TS Builder Classes (fluent API, compiled to JSON) ───────────────
+// ─── Builders ────────────────────────────────────────────────────────
 
-/** Base builder with shared methods for all types. */
-abstract class BaseBuilder<T extends BaseBuilder<T>> {
+abstract class BaseBuilder<T extends BaseBuilder<T, O>, O = unknown> {
+    declare readonly __output: O
     protected _schema: FieldSchema;
-
-    constructor(schema: FieldSchema) {
-        this._schema = schema;
-    }
-
-    /** Mark this field as required. */
-    required(): T {
-        this._schema.required = true;
-        return this as unknown as T;
-    }
-
-    /** Build and return the schema. */
-    build(): FieldSchema {
-        return { ...this._schema };
-    }
+    constructor(schema: FieldSchema) { this._schema = schema; }
+    required(): T { this._schema.required = true; return this as unknown as T; }
+    build(): FieldSchema { return { ...this._schema }; }
 }
 
-/** String field builder. */
-export class StringBuilder extends BaseBuilder<StringBuilder> {
-    constructor() {
-        super({ type: "string" });
-    }
-
-    min(length: number): StringBuilder { this._schema.min = length; return this; }
-    max(length: number): StringBuilder { this._schema.max = length; return this; }
-    pattern(name: string): StringBuilder { this._schema.pattern = name; return this; }
-    enum(...values: string[]): StringBuilder { this._schema.enum = values; return this; }
+export class StringBuilder extends BaseBuilder<StringBuilder, string> {
+    constructor() { super({ type: "string" }); }
+    min(n: number): StringBuilder { this._schema.min = n; return this; }
+    max(n: number): StringBuilder { this._schema.max = n; return this; }
+    pattern(p: string): StringBuilder { this._schema.pattern = p; return this; }
+    enum(...v: string[]): StringBuilder { this._schema.enum = v; return this; }
 }
 
-/** Number field builder. */
-export class NumberBuilder extends BaseBuilder<NumberBuilder> {
-    constructor(type: "number" | "integer" = "number") {
-        super({ type });
-        if (type === "integer") this._schema.int = true;
-    }
-
-    min(value: number): NumberBuilder { this._schema.min = value; return this; }
-    max(value: number): NumberBuilder { this._schema.max = value; return this; }
-    integer(): NumberBuilder { this._schema.int = true; if (this._schema.type === "number") this._schema.type = "integer"; return this; }
+export class NumberBuilder extends BaseBuilder<NumberBuilder, number> {
+    constructor(type: "number" | "integer" = "number") { super({ type }); if (type === "integer") this._schema.int = true; }
+    min(v: number): NumberBuilder { this._schema.min = v; return this; }
+    max(v: number): NumberBuilder { this._schema.max = v; return this; }
+    integer(): NumberBuilder { this._schema.int = true; this._schema.type = "integer"; return this; }
 }
 
-/** Boolean field builder. */
-export class BooleanBuilder extends BaseBuilder<BooleanBuilder> {
+export class BooleanBuilder extends BaseBuilder<BooleanBuilder, boolean> {
     constructor() { super({ type: "boolean" }); }
 }
 
-/** Array field builder. */
-export class ArrayBuilder extends BaseBuilder<ArrayBuilder> {
-    constructor(itemSchema: FieldSchema) { super({ type: "array", items: itemSchema }); }
-    min(length: number): ArrayBuilder { this._schema.min = length; return this; }
-    max(length: number): ArrayBuilder { this._schema.max = length; return this; }
+export class ArrayBuilder<Item = unknown> extends BaseBuilder<ArrayBuilder<Item>, Item[]> {
+    constructor(items: FieldSchema) { super({ type: "array", items }); }
+    min(n: number): ArrayBuilder<Item> { this._schema.min = n; return this; }
+    max(n: number): ArrayBuilder<Item> { this._schema.max = n; return this; }
 }
 
-/** Object field builder. */
-export class ObjectBuilder extends BaseBuilder<ObjectBuilder> {
-    constructor(properties: Record<string, FieldSchema>) { super({ type: "object", properties }); }
+export class ObjectBuilder<Props extends Record<string, unknown> = Record<string, unknown>> extends BaseBuilder<ObjectBuilder<Props>, Props> {
+    constructor(props: Record<string, FieldSchema>) { super({ type: "object", properties: props }); }
 }
 
 // ─── Schema Builder Factory (s.*) ────────────────────────────────────
 
 export const s = {
-    string(): StringBuilder { return new StringBuilder(); },
-    number(): NumberBuilder { return new NumberBuilder("number"); },
-    integer(): NumberBuilder { return new NumberBuilder("integer"); },
-    boolean(): BooleanBuilder { return new BooleanBuilder(); },
-    array(items: FieldSchema | BaseBuilder<any>): ArrayBuilder {
-        return new ArrayBuilder(items instanceof BaseBuilder ? items.build() : items);
-    },
-    object(properties: Record<string, FieldSchema | BaseBuilder<any>>): ObjectBuilder {
-        const resolved: Record<string, FieldSchema> = {};
-        for (const [key, val] of Object.entries(properties)) {
-            resolved[key] = val instanceof BaseBuilder ? val.build() : val;
-        }
-        return new ObjectBuilder(resolved);
+    string: (): StringBuilder => new StringBuilder(),
+    number: (): NumberBuilder => new NumberBuilder("number"),
+    integer: (): NumberBuilder => new NumberBuilder("integer"),
+    boolean: (): BooleanBuilder => new BooleanBuilder(),
+    array: <T>(items: FieldSchema | BaseBuilder<any> & { __output: T }): ArrayBuilder<T> =>
+        new ArrayBuilder<T>(items instanceof BaseBuilder ? items.build() : items),
+    object: <T extends Record<string, FieldSchema | BaseBuilder<any>>>(
+        props: T
+    ): ObjectBuilder<{ [K in keyof T]: InferField<T[K]> }> => {
+        const r: Record<string, FieldSchema> = {};
+        for (const [k, v] of Object.entries(props)) r[k] = v instanceof BaseBuilder ? v.build() : v;
+        return new ObjectBuilder(r) as any;
     },
 };
 
-// ─── Internal helpers ────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────
 
-/** @internal */
-export function resolveFieldSchema(field: FieldSchema | BaseBuilder<any>): FieldSchema {
+function resolve(field: FieldSchema | BaseBuilder<any>): FieldSchema {
     return field instanceof BaseBuilder ? field.build() : field
 }
 
-/** @internal */
-export function fieldSchemaToRustJson(schema: FieldSchema): Record<string, unknown> {
-    const result: Record<string, unknown> = { type: schema.type, required: schema.required ?? false }
-    if (schema.min !== undefined) result.min = schema.min
-    if (schema.max !== undefined) result.max = schema.max
-    if (schema.pattern !== undefined) result.pattern = schema.pattern
-    if (schema.enum !== undefined) result.enum = schema.enum
-    if (schema.int !== undefined) result.int = schema.int
-    if (schema.items !== undefined) result.items = fieldSchemaToRustJson(schema.items)
+function toRustJson(schema: FieldSchema): Record<string, unknown> {
+    const r: Record<string, unknown> = { type: schema.type, required: schema.required ?? false }
+    if (schema.min !== undefined) r.min = schema.min
+    if (schema.max !== undefined) r.max = schema.max
+    if (schema.pattern !== undefined) r.pattern = schema.pattern
+    if (schema.enum !== undefined) r.enum = schema.enum
+    if (schema.int !== undefined) r.int = schema.int
+    if (schema.items !== undefined) r.items = toRustJson(schema.items)
     if (schema.properties !== undefined) {
-        const props: Record<string, unknown> = {}
-        for (const [key, val] of Object.entries(schema.properties)) {
-            props[key] = fieldSchemaToRustJson(val)
-        }
-        result.properties = props
+        const p: Record<string, unknown> = {}
+        for (const [k, v] of Object.entries(schema.properties)) p[k] = toRustJson(v)
+        r.properties = p
     }
-    return result
+    return r
 }
 
-/** @internal */
-export function schemaDefToJson(def: RouteSchemaDefinition): string {
-    const result: Record<string, unknown> = {}
-    if (def.body) {
-        const body: Record<string, unknown> = {}
-        for (const [key, val] of Object.entries(def.body)) body[key] = fieldSchemaToRustJson(resolveFieldSchema(val))
-        result.body = body
-    }
-    if (def.query) {
-        const query: Record<string, unknown> = {}
-        for (const [key, val] of Object.entries(def.query)) query[key] = fieldSchemaToRustJson(resolveFieldSchema(val))
-        result.query = query
-    }
-    if (def.params) {
-        const params: Record<string, unknown> = {}
-        for (const [key, val] of Object.entries(def.params)) params[key] = fieldSchemaToRustJson(resolveFieldSchema(val))
-        result.params = params
-    }
-    return JSON.stringify(result)
-}
+let _counter = 0
 
-function buildRouteKey(method: string, path: string): string {
-    return `${method}:${path}`
-}
-
-// ─── Validate function — accepts either TS schema or Rust SchemaBuilder
+// ─── validate() ──────────────────────────────────────────────────────
 
 /**
- * Create a validation middleware.
+ * Validate body data against fields. Returns `{ success, data?, errors? }`.
+ * Types are auto-inferred from the field definitions.
  *
- * Overload 1: Pass a Rust SchemaBuilder (fastest, zero JSON):
+ * @example
  * ```ts
- * const schema = new SchemaBuilder()
- * schema.addBodyString("name", new StringField().tap(f => f.required()))
- * router.validate(schema, validator)
- * ```
+ * const result = validate({ name: "John", email: "john@example.com" }, {
+ *   name: s.string().required().min(2),
+ *   email: s.string().required().pattern("email"),
+ * }, validator)
  *
- * Overload 2: Pass a TS schema definition (convenient, compiled to JSON):
- * ```ts
- * router.validate({ body: { name: s.string().required() } }, validator)
+ * if (result.success) {
+ *   result.data.name  // string
+ *   result.data.email // string
+ * }
  * ```
  */
-export function validate(
-    schema: RustSchemaBuilder | RouteSchemaDefinition,
+export function validate<T extends Record<string, FieldDef>>(
+    data: unknown,
+    fields: T,
     validator: ValidatorType,
-): RequestMiddleware {
-    // Determine if this is a Rust SchemaBuilder or a TS schema definition
-    const isRustBuilder = schema instanceof RustSchemaBuilder
+): ValidationResult<InferFields<T>> {
+    // Build JSON schema for body
+    const bodySchema: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(fields)) {
+        bodySchema[k] = toRustJson(resolve(v))
+    }
+    const schemaJson = JSON.stringify({ body: bodySchema })
 
-    if (!isRustBuilder) {
-        // Pre-compile TS schema to JSON once
-        const schemaJson = schemaDefToJson(schema as RouteSchemaDefinition)
-        const hasBody = (schema as RouteSchemaDefinition).body !== undefined
-        const hasQuery = (schema as RouteSchemaDefinition).query !== undefined
-        const hasParams = (schema as RouteSchemaDefinition).params !== undefined
+    // Register with a unique key
+    const key = `__validate_${_counter++}`
+    validator.addSchema(key, schemaJson)
 
-        return (ctx: Context) => {
-            const req: NRequest = ctx.req
-            const url = new URL(req.url)
-            const routeKey = buildRouteKey(req.method, url.pathname)
-
-            if (!validator.hasSchema(routeKey)) {
-                validator.addSchema(routeKey, schemaJson)
-            }
-
-            runValidation(ctx, req, validator, routeKey, hasBody, hasQuery, hasParams, schema as RouteSchemaDefinition)
+    // Serialize data
+    let bodyString: string
+    if (typeof data === "string") {
+        bodyString = data
+    } else if (data !== undefined && data !== null) {
+        try { bodyString = JSON.stringify(data) } catch {
+            return { success: false, errors: [{ field: "body", message: "Invalid data", code: "invalid_json" }] }
         }
+    } else {
+        return { success: false, errors: [{ field: "body", message: "Data is required", code: "required" }] }
     }
 
-    // Rust SchemaBuilder path — zero JSON
-    const builder = schema as RustSchemaBuilder
-
-    return (ctx: Context) => {
-        const req: NRequest = ctx.req
-        const url = new URL(req.url)
-        const routeKey = buildRouteKey(req.method, url.pathname)
-
-        if (!validator.hasSchema(routeKey)) {
-            validator.addSchemaFromBuilder(routeKey, builder)
-        }
-
-        runValidation(ctx, req, validator, routeKey, true, true, true)
+    const result = validator.validateBodyValue(key, bodyString)
+    if (!result.success) {
+        return { success: false, errors: result.errors ?? [] }
     }
+
+    // Parse validated data
+    let parsed: InferFields<T>
+    if (typeof data === "string") {
+        try { parsed = JSON.parse(result.data ?? data) as InferFields<T> } catch { parsed = data as InferFields<T> }
+    } else {
+        parsed = (result.data ? (tryParse(result.data) ?? data) : data) as InferFields<T>
+    }
+
+    return { success: true, data: parsed }
 }
 
-/** @internal */
-function runValidation(
-    ctx: Context,
-    req: NRequest,
-    validator: ValidatorType,
-    routeKey: string,
-    hasBody: boolean,
-    hasQuery: boolean,
-    hasParams: boolean,
-    schemaDef?: RouteSchemaDefinition,
-): void {
-    // Validate body
-    if (hasBody) {
-        let validated = false
-
-        const rustBody = req._rustParsedBody
-        if (typeof rustBody === "string") {
-            const result = validator.validateBodyValue(routeKey, rustBody)
-            if (!result.success) {
-                ctx.status(400).json({ error: "Validation failed", errors: result.errors })
-                return
-            }
-            validated = true
-        }
-
-        if (!validated) {
-            if (req.parsedBody !== undefined) {
-                const result = validator.validateBodyValue(routeKey, JSON.stringify(req.parsedBody))
-                if (!result.success) {
-                    ctx.status(400).json({ error: "Validation failed", errors: result.errors })
-                    return
-                }
-            } else if (schemaDef?.body) {
-                const hasRequired = Object.values(schemaDef.body).some(f => resolveFieldSchema(f).required)
-                if (hasRequired) {
-                    ctx.status(400).json({
-                        error: "Validation failed",
-                        errors: [{ field: "body", message: "Request body is required", code: "required" }],
-                    })
-                    return
-                }
-            }
-        }
-    }
-
-    // Validate query params
-    if (hasQuery) {
-        const queryMap: Record<string, string> = {}
-        const queryParams = req.queryParams
-        if (queryParams) {
-            for (const [key, val] of Object.entries(queryParams)) queryMap[key] = val
-        }
-        const result = validator.validateQuery(routeKey, queryMap)
-        if (!result.success) {
-            ctx.status(400).json({ error: "Validation failed", errors: result.errors })
-            return
-        }
-    }
-
-    // Validate path params
-    if (hasParams && req.pathParams) {
-        const paramMap: Record<string, string> = {}
-        const pp = req.pathParams
-        if (typeof pp === "object" && !Array.isArray(pp)) {
-            for (const [key, val] of Object.entries(pp)) paramMap[key] = val
-        }
-        const result = validator.validateParams(routeKey, paramMap)
-        if (!result.success) {
-            ctx.status(400).json({ error: "Validation failed", errors: result.errors })
-        }
-    }
+function tryParse(json: string): unknown {
+    try { return JSON.parse(json) } catch { return undefined }
 }

@@ -64,11 +64,6 @@ import {
   getFileFieldNames,
   getFormFields,
 } from "./router/fileUpload";
-import {
-  validate as createValidateMiddleware,
-  type RouteSchemaDefinition,
-} from "./router/validator";
-import type { Validator, SchemaBuilder } from "../../index.js";
 export type ErrorHandler = (err: Error, ctx: Context) => Awaitable<void>;
 
 /**
@@ -95,7 +90,6 @@ export class Router {
   private wsHandlers?: WebSocketHandlers;
   private errorHandler?: ErrorHandler;
   private routeMeta = new Map<string, { queryParams?: QueryParamInfo[] }>();
-  private _validator?: Validator;
 
   // Expose cookie methods as static
   static parseCookies = parseCookies;
@@ -592,96 +586,6 @@ export class Router {
     options?: FileUploadOptions,
   ): Router {
     registerFileUpload(this.routes, method, path, options);
-    return this;
-  }
-
-  /**
-   * Set a Rust Validator instance for request validation.
-   * Required before using `router.validate()`.
-   * @param validator A Validator instance from napi-router
-   * @returns The router, for chaining
-   */
-  setValidator(validator: Validator): Router {
-    this._validator = validator;
-    return this;
-  }
-
-  /**
-   * Create a validation middleware for the given schema.
-   * The method and path are auto-detected from the request at runtime.
-   *
-   * Requires a Validator to be set via `router.setValidator()` first.
-   *
-   * Accepts either:
-   * - A Rust `SchemaBuilder` (fastest, zero JSON)
-   * - A TS schema definition with `s.*` builders (convenient)
-   *
-   * @param schema The schema definition (SchemaBuilder or { body, query, params })
-   * @returns A RequestMiddleware that validates the request
-   *
-   * @example
-   * ```ts
-   * // Rust SchemaBuilder (fastest)
-   * const schema = new SchemaBuilder()
-   * schema.addBodyString("name", new StringField().tap(f => f.required()))
-   * router.validate(schema)
-   *
-   * // TS s.* builder (convenient)
-   * router.validate({
-   *   body: { name: s.string().required().min(2) },
-   *   query: { page: s.integer().min(1) },
-   * })
-   * ```
-   */
-  validate(schema: SchemaBuilder | RouteSchemaDefinition): RequestMiddleware {
-    if (!this._validator) {
-      throw new Error(
-        "Router.validate() requires a Validator. Call router.setValidator(validator) first.",
-      );
-    }
-    return createValidateMiddleware(schema, this._validator);
-  }
-
-  /**
-   * Get the Rust Validator instance associated with this router.
-   * @returns The Validator, or undefined if not set
-   */
-  getValidator(): Validator | undefined {
-    return this._validator;
-  }
-
-  /**
-   * Register all validation schemas with the server for auto-validate mode.
-   * When auto-validate is enabled, the server validates requests in Rust
-   * before calling JS — zero NAPI overhead.
-   *
-   * Call this after all routes are registered.
-   *
-   * @param server The server instance
-   *
-   * @example
-   * ```ts
-   * const validator = new Validator()
-   * const router = new Router()
-   * router.setValidator(validator)
-   *
-   * router.post("/users",
-   *   router.validate({ body: { name: s.string({ required: true }) } }),
-   *   handler
-   * )
-   *
-   * const server = await serve({ port: 3000, fetch: router.handle })
-   * router.enableAutoValidate(server)  // Register schemas + enable auto-validate
-   * ```
-   */
-  enableAutoValidate(server: import("../serve").Server): Router {
-    if (!this._validator) {
-      throw new Error(
-        "Router.enableAutoValidate() requires a Validator. Call router.setValidator(validator) first.",
-      );
-    }
-    server.setValidator(this._validator);
-    server.setAutoValidate(true);
     return this;
   }
 
