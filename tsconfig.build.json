@@ -15,16 +15,9 @@
     "noUnusedParameters": true,
     "removeComments": true,
     "sourceMap": false,
-    "outDir": "./dist",
-    "rootDir": ".",
-    "lib": ["ES2022", "DOM"],
-    "resolveJsonModule": true,
-    "declaration": true,
-    "declarationMap": false,
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["./src/*"]
-    }
+    "outDir": "./dist/adapter",
+    "rootDir": "adapter",
+    "baseUrl": "adapter"
   },
   "include": [
     "adapter/**/*.ts"

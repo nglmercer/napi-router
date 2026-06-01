@@ -1,6 +1,6 @@
 {
   "name": "napi-router",
-  "version": "1.2.0",
+  "version": "1.2.2",
   "description": "Bun-compatible HTTP server powered by Rust via NAPI — works in Node.js, Bun, and Deno",
   "keywords": [
     "napi",
@@ -61,8 +61,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "napi build --platform --release",
-    "build:debug": "napi build --platform",
+    "build": "napi build --platform --release && cp index.js index.d.ts dist/",
+    "build:debug": "napi build --platform && cp index.js index.d.ts dist/",
     "build:ts": "tsc -p tsconfig.build.json",
     "clean": "napi clean && cargo clean && rm -rf dist",
     "test": "bun test",

@@ -27,24 +27,24 @@ const loginFields = {
 };
 
 router.post("/register", async (ctx) => {
-  const body = await ctx.req.json()
-  const result = validate(body, registerFields, validator)
+  const body = await ctx.req.json();
+  const result = validate(body, registerFields, validator);
   if (!result.success) {
-    ctx.status(400).json({ errors: result.errors })
-    return
+    ctx.status(400).json({ errors: result.errors });
+    return;
   }
-  ctx.json({ message: "Registered", user: (result.data as any).name })
-})
+  ctx.json({ message: "Registered", user: (result.data as any).name });
+});
 
 router.post("/login", async (ctx) => {
-  const body = await ctx.req.json()
-  const result = validate(body, loginFields, validator)
+  const body = await ctx.req.json();
+  const result = validate(body, loginFields, validator);
   if (!result.success) {
-    ctx.status(400).json({ errors: result.errors })
-    return
+    ctx.status(400).json({ errors: result.errors });
+    return;
   }
-  ctx.json({ token: "ok" })
-})
+  ctx.json({ token: "ok" });
+});
 
 // ─── router.request() tests ──────────────────────────────────────────
 describe("validate() with router.request()", () => {
@@ -53,7 +53,11 @@ describe("validate() with router.request()", () => {
       new Request("http://localhost/register", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "John", email: "john@example.com", password: "secret123" }),
+        body: JSON.stringify({
+          name: "John",
+          email: "john@example.com",
+          password: "secret123",
+        }),
       }),
     );
     expect(res1.status).toBe(200);
@@ -95,7 +99,10 @@ describe("standalone validate()", () => {
   it("returns errors on invalid data", () => {
     const result = validate(
       { email: "bad" },
-      { name: s.string().required(), email: s.string().required().pattern("email") },
+      {
+        name: s.string().required(),
+        email: s.string().required().pattern("email"),
+      },
       validator,
     );
     expect(result.success).toBe(false);
@@ -114,10 +121,25 @@ describe("standalone validate()", () => {
 
   it("validates nested objects", () => {
     const result = validate(
-      { items: [{ id: "a", qty: 2 }], shipping: { address: "123 Main", city: "NYC" } },
       {
-        items: s.array(s.object({ id: s.string().required(), qty: s.integer().required().min(1) })).required(),
-        shipping: s.object({ address: s.string().required(), city: s.string().required() }).required(),
+        items: [{ id: "a", qty: 2 }],
+        shipping: { address: "123 Main", city: "NYC" },
+      },
+      {
+        items: s
+          .array(
+            s.object({
+              id: s.string().required(),
+              qty: s.integer().required().min(1),
+            }),
+          )
+          .required(),
+        shipping: s
+          .object({
+            address: s.string().required(),
+            city: s.string().required(),
+          })
+          .required(),
       },
       validator,
     );

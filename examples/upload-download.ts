@@ -1,4 +1,4 @@
-import { serve } from "../adapter/serve.js";
+import { serve } from "../dist/adapter/serve.js";
 import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
